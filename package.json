@@ -1,0 +1,7 @@
+{
+  "name": "pi-personal",
+  "private": true,
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
