@@ -1,6 +1,9 @@
 {
   "name": "pi-personal",
   "private": true,
+  "dependencies": {
+    "highlight.svelte": "^0.1.3"
+  },
   "pi": {
     "extensions": ["./extensions"]
   }
