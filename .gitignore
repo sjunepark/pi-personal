@@ -17,3 +17,6 @@ coverage/
 
 # macOS
 .DS_Store
+
+# Pi local runtime state
+.pi/

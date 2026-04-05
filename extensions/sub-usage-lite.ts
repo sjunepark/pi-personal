@@ -149,6 +149,10 @@ function detectSupportedProvider(ctx: ExtensionContext): SupportedProvider | und
 	return undefined;
 }
 
+function getProviderIcon(provider: SupportedProvider): string {
+	return provider === "anthropic" ? "✦" : "◎";
+}
+
 async function fetchJson(url: string, init: RequestInit): Promise<Response> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -248,7 +252,7 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 
 		const line = await getLine(provider, force);
 		if (version !== refreshVersion) return;
-		ctx.ui.setStatus(STATUS_KEY, line);
+		ctx.ui.setStatus(STATUS_KEY, line ? `${getProviderIcon(provider)} ${line}` : undefined);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
