@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 
 type FastModeState = {
 	enabled: boolean;
+	explicit?: boolean;
 };
 
 type FastSupport = {
@@ -68,16 +69,28 @@ function updateStatus(ctx: ExtensionContext, enabled: boolean): void {
 }
 
 function persistState(pi: ExtensionAPI, enabled: boolean): void {
-	pi.appendEntry(STATE_ENTRY_TYPE, { enabled } satisfies FastModeState);
+	pi.appendEntry(STATE_ENTRY_TYPE, { enabled, explicit: true } satisfies FastModeState);
 }
 
-function restoreState(ctx: ExtensionContext): boolean {
+function restoreState(ctx: ExtensionContext): FastModeState | undefined {
 	const entry = ctx.sessionManager
 		.getEntries()
 		.filter((item: { type: string; customType?: string }) => item.type === "custom" && item.customType === STATE_ENTRY_TYPE)
 		.pop() as { data?: FastModeState } | undefined;
 
-	return entry?.data?.enabled === true;
+	if (!entry?.data) return undefined;
+
+	return {
+		enabled: entry.data.enabled === true,
+		explicit: entry.data.explicit ?? true,
+	};
+}
+
+function getDefaultEnabled(ctx: ExtensionContext): boolean {
+	const model = getCurrentModel(ctx);
+	if (!model) return false;
+	const provider = model.provider.toLowerCase();
+	return (provider === "openai" || provider === "openai-codex") && getFastSupport(ctx).supported;
 }
 
 function formatStatusMessage(ctx: ExtensionContext, enabled: boolean): string {
@@ -99,10 +112,18 @@ function patchPayloadWithFastMode(payload: unknown): unknown {
 
 export default function fastMode(pi: ExtensionAPI): void {
 	let enabled = false;
+	let hasExplicitPreference = false;
 
 	function setEnabled(next: boolean, ctx: ExtensionContext): void {
 		enabled = next;
+		hasExplicitPreference = true;
 		persistState(pi, enabled);
+		updateStatus(ctx, enabled);
+	}
+
+	function applyDefault(ctx: ExtensionContext): void {
+		if (hasExplicitPreference) return;
+		enabled = getDefaultEnabled(ctx);
 		updateStatus(ctx, enabled);
 	}
 
@@ -151,11 +172,17 @@ export default function fastMode(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		enabled = restoreState(ctx);
-		updateStatus(ctx, enabled);
+		const restoredState = restoreState(ctx);
+		hasExplicitPreference = restoredState?.explicit === true;
+		enabled = restoredState?.enabled ?? false;
+		applyDefault(ctx);
 	});
 
 	pi.on("model_select", async (event, ctx) => {
+		if (!hasExplicitPreference) {
+			applyDefault(ctx);
+			return;
+		}
 		updateStatus(ctx, enabled);
 		if (!enabled) return;
 		const support = getFastSupport(ctx);
