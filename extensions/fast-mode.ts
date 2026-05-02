@@ -13,6 +13,28 @@ type FastSupport = {
 const STATUS_KEY = "fast-mode";
 const STATE_ENTRY_TYPE = "fast-mode-state";
 
+// Keep these exact IDs aligned with @mariozechner/pi-ai's generated model registry.
+const FAST_SUPPORTED_MODELS_BY_PROVIDER: Record<string, ReadonlySet<string>> = {
+	openai: new Set([
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.4-nano",
+		"gpt-5.4-pro",
+		"gpt-5.5",
+		"gpt-5.5-pro",
+	]),
+	"openai-codex": new Set(["gpt-5.4", "gpt-5.4-mini", "gpt-5.5"]),
+};
+
+function getSupportedModelIds(provider: string): ReadonlySet<string> | undefined {
+	return FAST_SUPPORTED_MODELS_BY_PROVIDER[provider.toLowerCase()];
+}
+
+function formatSupportedModels(provider: string): string {
+	const modelIds = getSupportedModelIds(provider);
+	return modelIds ? Array.from(modelIds).join(", ") : "none";
+}
+
 function getCurrentModel(ctx: ExtensionContext): { provider: string; id: string } | undefined {
 	const provider = ctx.model?.provider?.trim();
 	const id = ctx.model?.id?.trim();
@@ -31,20 +53,19 @@ function getFastSupport(ctx: ExtensionContext): FastSupport {
 
 	const provider = model.provider.toLowerCase();
 	const modelId = model.id.toLowerCase();
-	const isSupportedProvider = provider === "openai" || provider === "openai-codex";
-	const isSupportedModel = modelId.startsWith("gpt-5.4");
+	const supportedModelIds = getSupportedModelIds(provider);
 
-	if (!isSupportedProvider) {
+	if (!supportedModelIds) {
 		return {
 			supported: false,
 			reason: `Unsupported provider: ${model.provider}. Fast mode is only enabled for openai and openai-codex providers.`,
 		};
 	}
 
-	if (!isSupportedModel) {
+	if (!supportedModelIds.has(modelId)) {
 		return {
 			supported: false,
-			reason: `Unsupported model: ${model.id}. Fast mode is currently limited to GPT-5.4 models.`,
+			reason: `Unsupported model: ${model.id}. Fast mode is currently limited to ${model.provider} models: ${formatSupportedModels(provider)}.`,
 		};
 	}
 
@@ -87,10 +108,7 @@ function restoreState(ctx: ExtensionContext): FastModeState | undefined {
 }
 
 function getDefaultEnabled(ctx: ExtensionContext): boolean {
-	const model = getCurrentModel(ctx);
-	if (!model) return false;
-	const provider = model.provider.toLowerCase();
-	return (provider === "openai" || provider === "openai-codex") && getFastSupport(ctx).supported;
+	return getFastSupport(ctx).supported;
 }
 
 function formatStatusMessage(ctx: ExtensionContext, enabled: boolean): string {
