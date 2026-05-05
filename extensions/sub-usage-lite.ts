@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 type SupportedProvider = "anthropic" | "openai-codex";
+type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
 type CacheEntry = {
 	fetchedAt: number;
@@ -54,6 +55,14 @@ type LegacyCodexAuthFile = {
 const STATUS_KEY = "sub-usage-lite";
 const CACHE_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
+const THINKING_COLORS: Record<ThinkingLevel, string> = {
+	off: "#6b7280",
+	minimal: "#22d3ee",
+	low: "#3b82f6",
+	medium: "#f59e0b",
+	high: "#ec4899",
+	xhigh: "#ef4444",
+};
 
 function readJsonFile<T>(path: string): T | undefined {
 	try {
@@ -151,6 +160,22 @@ function detectSupportedProvider(ctx: ExtensionContext): SupportedProvider | und
 
 function getProviderIcon(provider: SupportedProvider): string {
 	return provider === "anthropic" ? "✦" : "◎";
+}
+
+function vividFg(hex: string, text: string): string {
+	const match = /^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex);
+	if (!match) return text;
+
+	const [, r, g, b] = match;
+	return `\x1b[38;2;${parseInt(r, 16)};${parseInt(g, 16)};${parseInt(b, 16)}m${text}\x1b[39m`;
+}
+
+function formatThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): string | undefined {
+	if (!ctx.model?.reasoning) return undefined;
+
+	const level = pi.getThinkingLevel();
+	const label = level === "off" ? "thinking off" : level;
+	return vividFg(THINKING_COLORS[level], label);
 }
 
 async function fetchJson(url: string, init: RequestInit): Promise<Response> {
@@ -252,7 +277,17 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 
 		const line = await getLine(provider, force);
 		if (version !== refreshVersion) return;
-		ctx.ui.setStatus(STATUS_KEY, line ? `${getProviderIcon(provider)} ${line}` : undefined);
+
+		if (!line) {
+			ctx.ui.setStatus(STATUS_KEY, undefined);
+			return;
+		}
+
+		const thinking = formatThinkingLevel(pi, ctx);
+		const status = [`${getProviderIcon(provider)} ${line}`, thinking]
+			.filter((part): part is string => Boolean(part))
+			.join(" · ");
+		ctx.ui.setStatus(STATUS_KEY, status);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -261,6 +296,10 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 
 	pi.on("model_select", async (_event, ctx) => {
 		await refresh(ctx, true);
+	});
+
+	pi.on("thinking_level_select", async (_event, ctx) => {
+		await refresh(ctx, false);
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
