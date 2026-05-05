@@ -170,18 +170,21 @@ function vividFg(hex: string, text: string): string {
 	return `\x1b[38;2;${parseInt(r, 16)};${parseInt(g, 16)};${parseInt(b, 16)}m${text}\x1b[39m`;
 }
 
-function formatStatusLine(pi: ExtensionAPI, ctx: ExtensionContext, provider: SupportedProvider, line: string): string {
-	const prefixedLine = `${getProviderIcon(provider)} ${line}`;
-	if (!ctx.model?.reasoning) return prefixedLine;
+function formatThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): string | undefined {
+	if (!ctx.model?.reasoning) return undefined;
 
 	const level = pi.getThinkingLevel();
 	const label = level === "off" ? "thinking off" : level;
+	return vividFg(THINKING_COLORS[level], label);
+}
+
+function formatStatusLine(provider: SupportedProvider, line: string, thinking: string | undefined): string {
+	const prefixedLine = `${getProviderIcon(provider)} ${line}`;
+	if (!thinking) return prefixedLine;
+
 	const firstSpace = prefixedLine.indexOf(" ", 2);
-	const status =
-		firstSpace === -1
-			? `${prefixedLine} · ${label}`
-			: `${prefixedLine.slice(0, firstSpace)} ${label}${prefixedLine.slice(firstSpace)}`;
-	return vividFg(THINKING_COLORS[level], status);
+	if (firstSpace === -1) return `${prefixedLine} · ${thinking}`;
+	return `${prefixedLine.slice(0, firstSpace)} ${thinking}${prefixedLine.slice(firstSpace)}`;
 }
 
 async function fetchJson(url: string, init: RequestInit): Promise<Response> {
@@ -289,7 +292,7 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 			return;
 		}
 
-		ctx.ui.setStatus(STATUS_KEY, formatStatusLine(pi, ctx, provider, line));
+		ctx.ui.setStatus(STATUS_KEY, formatStatusLine(provider, line, formatThinkingLevel(pi, ctx)));
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
