@@ -59,7 +59,7 @@ const THINKING_COLORS: Record<ThinkingLevel, string> = {
 	off: "#6b7280",
 	minimal: "#22d3ee",
 	low: "#3b82f6",
-	medium: "#f59e0b",
+	medium: "#ff8c00",
 	high: "#ec4899",
 	xhigh: "#ef4444",
 };
@@ -178,6 +178,15 @@ function formatThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): string | 
 	return vividFg(THINKING_COLORS[level], label);
 }
 
+function formatStatusLine(provider: SupportedProvider, line: string, thinking: string | undefined): string {
+	const prefixedLine = `${getProviderIcon(provider)} ${line}`;
+	if (!thinking) return prefixedLine;
+
+	const firstSpace = prefixedLine.indexOf(" ", 2);
+	if (firstSpace === -1) return `${prefixedLine} · ${thinking}`;
+	return `${prefixedLine.slice(0, firstSpace)} ${thinking}${prefixedLine.slice(firstSpace)}`;
+}
+
 async function fetchJson(url: string, init: RequestInit): Promise<Response> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -283,11 +292,7 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 			return;
 		}
 
-		const thinking = formatThinkingLevel(pi, ctx);
-		const status = [`${getProviderIcon(provider)} ${line}`, thinking]
-			.filter((part): part is string => Boolean(part))
-			.join(" · ");
-		ctx.ui.setStatus(STATUS_KEY, status);
+		ctx.ui.setStatus(STATUS_KEY, formatStatusLine(provider, line, formatThinkingLevel(pi, ctx)));
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
