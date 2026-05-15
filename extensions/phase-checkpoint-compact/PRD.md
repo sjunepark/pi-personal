@@ -45,6 +45,7 @@ High-level flow:
 ```text
 agent completes phase
 -> agent calls phase_checkpoint_compact({ phaseCompleted, nextPhase, handoff... })
+-> tool sets Pi's thinking level/default to low
 -> tool records checkpoint and starts ctx.compact(...)
 -> tool result tells agent to stop substantial work for this turn
 -> on compaction complete, extension sends the next phase prompt
@@ -183,6 +184,7 @@ Do not auto-continue. Optionally send a short completion prompt/report request.
 - If additional tool calls happen while `checkpointPending` is true, consider blocking them through `tool_call` with a clear reason, except for harmless final reporting if blocking all tools is too disruptive.
 - Avoid recursive compaction: ignore or reject a second checkpoint request while one is pending.
 - Notify the user on compaction start, success, and failure when UI is available.
+- Set Pi's thinking level to `low` when the checkpoint is accepted and before the post-compaction continuation prompt is sent.
 - If `ctx.compact` is unavailable or fails, return a soft-checkpoint result and send a prompt asking whether to continue without real compaction.
 
 ## Implementation Notes
@@ -293,7 +295,7 @@ The skeleton is illustrative. Adjust imports and helper types to match the curre
 
 1. Pi loads the extension without TypeScript/runtime errors.
 2. The agent sees `phase_checkpoint_compact` as an available tool with clear guidelines.
-3. Calling the tool starts real Pi compaction with focused instructions.
+3. Calling the tool sets Pi's thinking level/default to `low` and starts real Pi compaction with focused instructions.
 4. The tool returns a clear stop-work message to the agent.
 5. After compaction succeeds, the extension sends the correct next-phase prompt.
 6. If compaction fails, the extension reports failure and offers a soft-checkpoint continuation path.

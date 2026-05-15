@@ -3,6 +3,7 @@ import { Type } from "typebox";
 
 const TOOL_NAME = "phase_checkpoint_compact";
 const ENTRY_TYPE = "phase-checkpoint-compact";
+const DEFAULT_THINKING_LEVEL: ReturnType<ExtensionAPI["getThinkingLevel"]> = "low";
 
 type PhaseName = "impl" | "post-review" | "impl-review" | "stop";
 type ValidationStatus = "passed" | "failed" | "skipped";
@@ -231,6 +232,11 @@ function notify(ctx: ExtensionContext, message: string, type: "info" | "warning"
 	ctx.ui.notify(message, type);
 }
 
+function applyDefaultThinkingLevel(pi: ExtensionAPI): void {
+	if (pi.getThinkingLevel() === DEFAULT_THINKING_LEVEL) return;
+	pi.setThinkingLevel(DEFAULT_THINKING_LEVEL);
+}
+
 type QueuedCheckpoint = {
 	toolCallId: string;
 	params: PhaseCheckpointInput;
@@ -265,6 +271,8 @@ export default function phaseCheckpointCompact(pi: ExtensionAPI): void {
 			if (!trimmedHandoff) {
 				return textToolResult("handoffSummary must not be empty.", { pending: false }, true);
 			}
+
+			applyDefaultThinkingLevel(pi);
 
 			pi.appendEntry(ENTRY_TYPE, {
 				timestamp: Date.now(),
@@ -314,18 +322,21 @@ export default function phaseCheckpointCompact(pi: ExtensionAPI): void {
 				customInstructions,
 				onComplete: () => {
 					clearPending();
+					applyDefaultThinkingLevel(pi);
 					notify(ctx, "Phase checkpoint compaction completed", "info");
 					const prompt = buildNextPhasePrompt(params);
 					if (prompt) pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 				},
 				onError: (error) => {
 					clearPending();
+					applyDefaultThinkingLevel(pi);
 					notify(ctx, `Phase checkpoint compaction failed: ${getErrorMessage(error)}`, "error");
 					pi.sendUserMessage(buildCompactionFailurePrompt(params, error), { deliverAs: "followUp" });
 				},
 			});
 		} catch (error) {
 			clearPending();
+			applyDefaultThinkingLevel(pi);
 			notify(ctx, `Phase checkpoint compaction failed: ${getErrorMessage(error)}`, "error");
 			pi.sendUserMessage(buildCompactionFailurePrompt(params, error), { deliverAs: "followUp" });
 		}
