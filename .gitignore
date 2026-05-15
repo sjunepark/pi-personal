@@ -20,3 +20,5 @@ coverage/
 
 # Pi local runtime state
 .pi/
+
+.tmp/
