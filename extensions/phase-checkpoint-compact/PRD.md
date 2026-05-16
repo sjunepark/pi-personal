@@ -204,6 +204,27 @@ import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
+
+type ThinkingLevelSnapshot = {
+  previousLevel: ThinkingLevel;
+  appliedLevel: ThinkingLevel;
+};
+
+const COMPACTION_THINKING_LEVEL: ThinkingLevel = "low";
+
+function lowerThinkingLevelForCompaction(pi: ExtensionAPI): ThinkingLevelSnapshot {
+  const previousLevel = pi.getThinkingLevel();
+  if (previousLevel !== COMPACTION_THINKING_LEVEL) pi.setThinkingLevel(COMPACTION_THINKING_LEVEL);
+  return { previousLevel, appliedLevel: pi.getThinkingLevel() };
+}
+
+function restoreThinkingLevel(pi: ExtensionAPI, snapshot: ThinkingLevelSnapshot): void {
+  if (pi.getThinkingLevel() !== snapshot.appliedLevel) return;
+  if (snapshot.previousLevel === snapshot.appliedLevel) return;
+  pi.setThinkingLevel(snapshot.previousLevel);
+}
+
 export default function (pi: ExtensionAPI) {
   let checkpointPending = false;
 
@@ -253,6 +274,7 @@ export default function (pi: ExtensionAPI) {
 
       checkpointPending = true;
       const customInstructions = buildCompactionInstructions(params);
+      const thinkingLevel = lowerThinkingLevelForCompaction(pi);
 
       if (ctx.hasUI) ctx.ui.notify("Phase checkpoint compaction started", "info");
 
@@ -260,6 +282,7 @@ export default function (pi: ExtensionAPI) {
         customInstructions,
         onComplete: () => {
           checkpointPending = false;
+          restoreThinkingLevel(pi, thinkingLevel);
           if (ctx.hasUI) ctx.ui.notify("Phase checkpoint compaction completed", "info");
           if (params.nextPhase !== "stop") {
             pi.sendUserMessage(buildNextPhasePrompt(params), { deliverAs: "followUp" });
@@ -267,6 +290,7 @@ export default function (pi: ExtensionAPI) {
         },
         onError: (error) => {
           checkpointPending = false;
+          restoreThinkingLevel(pi, thinkingLevel);
           if (ctx.hasUI) ctx.ui.notify(`Phase checkpoint compaction failed: ${error.message}`, "error");
           pi.sendUserMessage(buildCompactionFailurePrompt(params, error), { deliverAs: "followUp" });
         },

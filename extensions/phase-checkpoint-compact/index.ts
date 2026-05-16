@@ -243,7 +243,7 @@ type ThinkingLevelSnapshot = {
 function lowerThinkingLevelForCompaction(pi: ExtensionAPI): ThinkingLevelSnapshot {
 	const previousLevel = pi.getThinkingLevel();
 	if (previousLevel !== COMPACTION_THINKING_LEVEL) pi.setThinkingLevel(COMPACTION_THINKING_LEVEL);
-	return { previousLevel, appliedLevel: COMPACTION_THINKING_LEVEL };
+	return { previousLevel, appliedLevel: pi.getThinkingLevel() };
 }
 
 function restoreThinkingLevel(pi: ExtensionAPI, snapshot: ThinkingLevelSnapshot): void {
