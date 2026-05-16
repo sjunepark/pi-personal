@@ -18,7 +18,7 @@ import type { GoalEvent, GoalState, GoalTransition, UsageSnapshot } from "./type
 import { ENTRY_TYPE, GOAL_TOOL_NAMES, MAX_OBJECTIVE_CHARS, MESSAGE_TYPE, STATUS_KEY } from "./types.js";
 
 type SendMessageOptions = { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
-type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean };
+type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown };
 
 const UPDATE_STATUS_SCHEMA = Type.Object({
 	status: Type.Union([Type.Literal("complete")], {
@@ -31,6 +31,13 @@ const runtime = new GoalRuntime();
 function updateStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
 	ctx.ui.setStatus(STATUS_KEY, runtime.statusBarEnabled ? statusLine(runtime.goal) : undefined);
+}
+
+function restoreSessionGoal(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	const restored = latestStateFromSession(ctx);
+	runtime.restore(restored.restoredGoal, restored.restoredStatusBar);
+	updateStatus(ctx);
+	syncGoalTools(pi);
 }
 
 function syncGoalTools(pi: ExtensionAPI): void {
@@ -89,11 +96,10 @@ function isAbortedAgentEnd(event: { messages?: Array<{ role?: string; stopReason
 	return event.messages?.some((message) => message.role === "assistant" && message.stopReason === "aborted") === true;
 }
 
-function textToolResult(text: string, details?: unknown, isError = false): ToolTextResult {
+function textToolResult(text: string, details?: unknown): ToolTextResult {
 	return {
 		content: [{ type: "text", text }],
 		details,
-		isError,
 	};
 }
 
@@ -196,16 +202,16 @@ export default function personalGoal(pi: ExtensionAPI): void {
 		],
 		parameters: Type.Object({
 			objective: Type.String({ description: "Concrete objective to pursue until completion." }),
-			token_budget: Type.Optional(Type.Number({ description: "Optional positive integer token budget." })),
+			token_budget: Type.Optional(Type.Integer({ minimum: 1, description: "Optional positive integer token budget." })),
 		}),
 		async execute(_toolCallId, params: { objective: string; token_budget?: number }, _signal, _onUpdate, ctx) {
 			const goal = runtime.goal;
-			if (goal) return textToolResult("A goal already exists. Clear it before creating another goal.", { goal }, true);
-			const parsedBudget = params.token_budget === undefined ? null : Math.trunc(params.token_budget);
-			if (parsedBudget !== null && parsedBudget <= 0) return textToolResult("Token budget must be a positive integer.", { goal }, true);
+			if (goal) throw new Error("A goal already exists. Clear it before creating another goal.");
+			const parsedBudget = params.token_budget === undefined ? null : params.token_budget;
+			if (parsedBudget !== null && (!Number.isInteger(parsedBudget) || parsedBudget <= 0)) throw new Error("Token budget must be a positive integer.");
 			const objective = params.objective.trim();
-			if (!objective) return textToolResult("Objective must not be empty.", { goal }, true);
-			if ([...objective].length > MAX_OBJECTIVE_CHARS) return textToolResult(`Objective must be ${MAX_OBJECTIVE_CHARS} characters or fewer.`, { goal }, true);
+			if (!objective) throw new Error("Objective must not be empty.");
+			if ([...objective].length > MAX_OBJECTIVE_CHARS) throw new Error(`Objective must be ${MAX_OBJECTIVE_CHARS} characters or fewer.`);
 			const transition = runtime.create(objective, parsedBudget);
 			commitTransition(pi, ctx, transition, { deliverAs: "followUp", triggerTurn: true });
 			return textToolResult(goalSummary(transition.goal), { goal: transition.goal });
@@ -225,17 +231,14 @@ export default function personalGoal(pi: ExtensionAPI): void {
 		parameters: UPDATE_STATUS_SCHEMA,
 		async execute(_toolCallId, _params: { status: "complete" }, _signal, _onUpdate, ctx) {
 			const transition = runtime.complete();
-			if (!transition) return textToolResult("No active or budget-limited goal is set.", { goal: runtime.goal }, true);
+			if (!transition) throw new Error("No active or budget-limited goal is set.");
 			commitTransition(pi, ctx, transition);
 			return textToolResult(goalSummary(transition.goal), { goal: transition.goal });
 		},
 	});
 
 	pi.on("session_start", (event, ctx) => {
-		const restored = latestStateFromSession(ctx);
-		runtime.restore(restored.restoredGoal, restored.restoredStatusBar);
-		updateStatus(ctx);
-		syncGoalTools(pi);
+		restoreSessionGoal(pi, ctx);
 
 		const goal = runtime.goal;
 		if (!goal || goal.status !== "active") return;
@@ -250,6 +253,10 @@ export default function personalGoal(pi: ExtensionAPI): void {
 
 		ctx.ui.notify(`Goal restored: ${truncate(goal.objective)}\nUse /goal pause to stop continuation.`, "info");
 		if (ctx.isIdle()) queueContinuation(pi, goal);
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		restoreSessionGoal(pi, ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

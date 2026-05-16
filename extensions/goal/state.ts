@@ -150,7 +150,8 @@ export class GoalRuntime {
 	finishTurn(usage: UsageSnapshot | undefined): { goal: GoalState | null; transition?: GoalTransition; updated: boolean } {
 		const trackedGoalId = this.#trackedTurnGoalId;
 		this.#trackedTurnGoalId = null;
-		if (!this.#goal || !trackedGoalId || this.#goal.id !== trackedGoalId || (this.#goal.status !== "active" && this.#goal.status !== "complete")) {
+		const canAccountTrackedTurn = this.#goal?.status === "active" || this.#goal?.status === "paused" || this.#goal?.status === "complete";
+		if (!this.#goal || !trackedGoalId || this.#goal.id !== trackedGoalId || !canAccountTrackedTurn) {
 			this.#activeTurnStartedAt = null;
 			return { goal: this.goal, updated: false };
 		}
