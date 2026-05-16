@@ -9,7 +9,7 @@ This is a local implementation, not a package install. It keeps the trusted code
 boundary small: no subprocesses, no network calls, no package bootstrap.
 */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ContextUsage, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { goalSummary, parseGoalArgs, statusLine, truncate } from "./format.js";
 import { goalMessageForModel } from "./prompts.js";
@@ -20,6 +20,9 @@ import { ENTRY_TYPE, GOAL_TOOL_NAMES, MAX_OBJECTIVE_CHARS, MESSAGE_TYPE, STATUS_
 type SendMessageOptions = { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown };
 
+const GOAL_COMPACTION_MIN_TOKENS = 40_000;
+const GOAL_COMPACTION_PERCENT = 70;
+
 const UPDATE_STATUS_SCHEMA = Type.Object({
 	status: Type.Union([Type.Literal("complete")], {
 		description: "Only complete is accepted. Do not call until the whole objective is achieved.",
@@ -27,6 +30,7 @@ const UPDATE_STATUS_SCHEMA = Type.Object({
 });
 
 const runtime = new GoalRuntime();
+let goalCompactionPendingFor: string | null = null;
 
 function updateStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
@@ -34,6 +38,7 @@ function updateStatus(ctx: ExtensionContext): void {
 }
 
 function restoreSessionGoal(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	goalCompactionPendingFor = null;
 	const restored = latestStateFromSession(ctx);
 	runtime.restore(restored.restoredGoal, restored.restoredStatusBar);
 	updateStatus(ctx);
@@ -90,6 +95,58 @@ function queueContinuation(pi: ExtensionAPI, state: GoalState): void {
 		if (!latest) return;
 		emitGoalMessage(pi, latest, "resumed", { deliverAs: "followUp", triggerTurn: true });
 	});
+}
+
+function shouldCompactBeforeContinuation(usage: ContextUsage | undefined): usage is ContextUsage & { tokens: number; percent: number } {
+	if (!usage || usage.tokens === null || usage.percent === null) return false;
+	return usage.tokens >= GOAL_COMPACTION_MIN_TOKENS && usage.percent >= GOAL_COMPACTION_PERCENT;
+}
+
+function buildGoalCompactionInstructions(goal: GoalState, usage: ContextUsage & { tokens: number; percent: number }): string {
+	return `Compact this long-running goal session before the next autonomous continuation.
+
+Preserve:
+- active goal id ${goal.id}, status ${goal.status}, and objective:
+
+<untrusted_objective>
+${goal.objective}
+</untrusted_objective>
+
+- concrete progress already completed toward the goal
+- files read or modified, commands run, validation results, and current repository/session state
+- user decisions, constraints, blockers, and unresolved questions
+- the next low-risk action needed after compaction
+- token/time budget facts: ${goal.tokensUsed} tokens used${goal.tokenBudget === null ? " with no explicit goal budget" : ` of ${goal.tokenBudget}`} and ${Math.round(usage.percent)}% context usage
+
+Drop verbose raw tool output, repeated reasoning, stale alternatives, and details not needed to continue the goal safely.`;
+}
+
+function continueGoal(pi: ExtensionAPI, ctx: ExtensionContext, goal: GoalState): void {
+	if (goalCompactionPendingFor) return;
+
+	const usage = ctx.getContextUsage();
+	if (shouldCompactBeforeContinuation(usage)) {
+		goalCompactionPendingFor = goal.id;
+		if (ctx.hasUI) ctx.ui.notify(`Goal context high; compacting before continuing: ${truncate(goal.objective)}`, "info");
+		ctx.compact({
+			customInstructions: buildGoalCompactionInstructions(goal, usage),
+			onComplete: () => {
+				goalCompactionPendingFor = null;
+				if (ctx.hasUI) ctx.ui.notify("Goal context compaction completed; continuing goal.", "info");
+				const latest = runtime.goal;
+				if (latest?.id === goal.id && latest.status === "active") queueContinuation(pi, latest);
+			},
+			onError: (error) => {
+				goalCompactionPendingFor = null;
+				if (ctx.hasUI) ctx.ui.notify(`Goal context compaction failed; continuing without compaction: ${error.message}`, "warning");
+				const latest = runtime.goal;
+				if (latest?.id === goal.id && latest.status === "active") queueContinuation(pi, latest);
+			},
+		});
+		return;
+	}
+
+	queueContinuation(pi, goal);
 }
 
 function isAbortedAgentEnd(event: { messages?: Array<{ role?: string; stopReason?: string }> }): boolean {
@@ -252,7 +309,7 @@ export default function personalGoal(pi: ExtensionAPI): void {
 		}
 
 		ctx.ui.notify(`Goal restored: ${truncate(goal.objective)}\nUse /goal pause to stop continuation.`, "info");
-		if (ctx.isIdle()) queueContinuation(pi, goal);
+		if (ctx.isIdle()) continueGoal(pi, ctx, goal);
 	});
 
 	pi.on("session_tree", (_event, ctx) => {
@@ -260,6 +317,7 @@ export default function personalGoal(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		goalCompactionPendingFor = null;
 		const goal = runtime.goal;
 		if (!goal || goal.status !== "active") return;
 		// Persist latest visible state without changing status. Startup can resume it;
@@ -298,6 +356,6 @@ export default function personalGoal(pi: ExtensionAPI): void {
 
 		const latest = runtime.goal;
 		if (!latest || latest.status !== "active" || ctx.hasPendingMessages()) return;
-		queueContinuation(pi, latest);
+		continueGoal(pi, ctx, latest);
 	});
 }
