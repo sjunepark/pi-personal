@@ -3,7 +3,10 @@ import { Type } from "typebox";
 
 const TOOL_NAME = "phase_checkpoint_compact";
 const ENTRY_TYPE = "phase-checkpoint-compact";
-const DEFAULT_THINKING_LEVEL: ReturnType<ExtensionAPI["getThinkingLevel"]> = "low";
+
+type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
+
+const COMPACTION_THINKING_LEVEL: ThinkingLevel = "low";
 
 type PhaseName = "impl" | "post-review" | "impl-review" | "stop";
 type ValidationStatus = "passed" | "failed" | "skipped";
@@ -232,14 +235,27 @@ function notify(ctx: ExtensionContext, message: string, type: "info" | "warning"
 	ctx.ui.notify(message, type);
 }
 
-function applyDefaultThinkingLevel(pi: ExtensionAPI): void {
-	if (pi.getThinkingLevel() === DEFAULT_THINKING_LEVEL) return;
-	pi.setThinkingLevel(DEFAULT_THINKING_LEVEL);
+type ThinkingLevelSnapshot = {
+	previousLevel: ThinkingLevel;
+	appliedLevel: ThinkingLevel;
+};
+
+function lowerThinkingLevelForCompaction(pi: ExtensionAPI): ThinkingLevelSnapshot {
+	const previousLevel = pi.getThinkingLevel();
+	if (previousLevel !== COMPACTION_THINKING_LEVEL) pi.setThinkingLevel(COMPACTION_THINKING_LEVEL);
+	return { previousLevel, appliedLevel: COMPACTION_THINKING_LEVEL };
+}
+
+function restoreThinkingLevel(pi: ExtensionAPI, snapshot: ThinkingLevelSnapshot): void {
+	if (pi.getThinkingLevel() !== snapshot.appliedLevel) return;
+	if (snapshot.previousLevel === snapshot.appliedLevel) return;
+	pi.setThinkingLevel(snapshot.previousLevel);
 }
 
 type QueuedCheckpoint = {
 	toolCallId: string;
 	params: PhaseCheckpointInput;
+	thinkingLevel: ThinkingLevelSnapshot;
 	started: boolean;
 };
 
@@ -272,8 +288,6 @@ export default function phaseCheckpointCompact(pi: ExtensionAPI): void {
 				return textToolResult("handoffSummary must not be empty.", { pending: false }, true);
 			}
 
-			applyDefaultThinkingLevel(pi);
-
 			pi.appendEntry(ENTRY_TYPE, {
 				timestamp: Date.now(),
 				phaseCompleted: params.phaseCompleted,
@@ -281,7 +295,10 @@ export default function phaseCheckpointCompact(pi: ExtensionAPI): void {
 				checkpoint: params,
 			});
 
+			const thinkingLevel = lowerThinkingLevelForCompaction(pi);
+
 			if (typeof ctx.compact !== "function") {
+				restoreThinkingLevel(pi, thinkingLevel);
 				clearPending();
 				notify(ctx, "Phase checkpoint compaction is unavailable; queued soft-checkpoint fallback.", "warning");
 				pi.sendUserMessage(buildCompactionFailurePrompt(params, "ctx.compact is unavailable"), { deliverAs: "followUp" });
@@ -292,7 +309,7 @@ export default function phaseCheckpointCompact(pi: ExtensionAPI): void {
 				);
 			}
 
-			queuedCheckpoint = { toolCallId, params, started: false };
+			queuedCheckpoint = { toolCallId, params, thinkingLevel, started: false };
 			notify(ctx, "Phase checkpoint queued; compaction will start after this agent run ends", "info");
 
 			return textToolResult(
@@ -322,27 +339,29 @@ export default function phaseCheckpointCompact(pi: ExtensionAPI): void {
 				customInstructions,
 				onComplete: () => {
 					clearPending();
-					applyDefaultThinkingLevel(pi);
+					restoreThinkingLevel(pi, checkpoint.thinkingLevel);
 					notify(ctx, "Phase checkpoint compaction completed", "info");
 					const prompt = buildNextPhasePrompt(params);
 					if (prompt) pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 				},
 				onError: (error) => {
 					clearPending();
-					applyDefaultThinkingLevel(pi);
+					restoreThinkingLevel(pi, checkpoint.thinkingLevel);
 					notify(ctx, `Phase checkpoint compaction failed: ${getErrorMessage(error)}`, "error");
 					pi.sendUserMessage(buildCompactionFailurePrompt(params, error), { deliverAs: "followUp" });
 				},
 			});
 		} catch (error) {
 			clearPending();
-			applyDefaultThinkingLevel(pi);
+			restoreThinkingLevel(pi, checkpoint.thinkingLevel);
 			notify(ctx, `Phase checkpoint compaction failed: ${getErrorMessage(error)}`, "error");
 			pi.sendUserMessage(buildCompactionFailurePrompt(params, error), { deliverAs: "followUp" });
 		}
 	});
 
 	pi.on("session_shutdown", () => {
+		const checkpoint = queuedCheckpoint;
+		if (checkpoint) restoreThinkingLevel(pi, checkpoint.thinkingLevel);
 		clearPending();
 	});
 }
