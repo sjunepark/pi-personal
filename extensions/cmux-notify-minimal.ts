@@ -27,6 +27,9 @@ type RunState = {
 	searchCount: number;
 	bashCount: number;
 	firstToolError?: string;
+	suppressCompletionNotify?: boolean;
+	continuationStatus?: string;
+	continuationLogMessage?: string;
 };
 
 type AssistantLike = {
@@ -41,6 +44,14 @@ type StatusState = {
 	color: string;
 	icon?: string;
 	priority: number;
+};
+
+type NotifyControlDetails = {
+	notify?: {
+		suppressCompletion?: boolean;
+		status?: string;
+		logMessage?: string;
+	};
 };
 
 function notifyOsc777(title: string, body: string) {
@@ -159,6 +170,12 @@ function summarizeAssistantText(message: AssistantLike): string | undefined {
 		.join("\n")
 		.trim();
 	return text ? trimSummary(text) : undefined;
+}
+
+function getNotifyControl(details: unknown): NotifyControlDetails["notify"] | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	const notify = (details as NotifyControlDetails).notify;
+	return notify && typeof notify === "object" ? notify : undefined;
 }
 
 function summarizeRunOutcome(
@@ -287,6 +304,17 @@ export default function (pi: ExtensionAPI) {
 			runState.firstToolError = summarizeToolError(event);
 		}
 
+		const notifyControl = getNotifyControl(event.details);
+		if (notifyControl?.suppressCompletion === true) {
+			runState.suppressCompletionNotify = true;
+			if (typeof notifyControl.status === "string" && notifyControl.status.trim()) {
+				runState.continuationStatus = notifyControl.status.trim();
+			}
+			if (typeof notifyControl.logMessage === "string" && notifyControl.logMessage.trim()) {
+				runState.continuationLogMessage = notifyControl.logMessage.trim();
+			}
+		}
+
 		if (isReadToolResult(event)) {
 			const path = getPath(event);
 			if (path) runState.readFiles.add(path);
@@ -325,6 +353,18 @@ export default function (pi: ExtensionAPI) {
 			currentStatusPriority = STATUS_PRIORITY_IDLE;
 			await applyStatus({ value: "Waiting", color: "#FF9500", icon: "bell.fill", priority: STATUS_PRIORITY_IDLE }, true);
 			await log("warning", runOutcome.message);
+			return;
+		}
+
+		if (runState.suppressCompletionNotify) {
+			currentStatusPriority = STATUS_PRIORITY_IDLE;
+			await applyStatus({
+				value: runState.continuationStatus || "Continuing",
+				color: "#4C8DFF",
+				icon: "arrow.triangle.2.circlepath",
+				priority: STATUS_PRIORITY_IDLE,
+			}, true);
+			await log("progress", runState.continuationLogMessage || "Run completed; continuation is queued");
 			return;
 		}
 

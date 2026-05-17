@@ -314,7 +314,16 @@ export default function phaseCheckpointCompact(pi: ExtensionAPI): void {
 
 			return textToolResult(
 				"Phase checkpoint accepted. Stop substantial work for this turn; the extension will compact after this agent run ends and resume the next phase afterward.",
-				{ pending: true, compacted: false, nextPhase: params.nextPhase },
+				{
+					pending: true,
+					compacted: false,
+					nextPhase: params.nextPhase,
+					notify: {
+						suppressCompletion: true,
+						status: "Continuing",
+						logMessage: "Phase checkpoint accepted; continuation is queued",
+					},
+				},
 			);
 		},
 	});
