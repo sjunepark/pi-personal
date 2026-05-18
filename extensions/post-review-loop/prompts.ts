@@ -1,4 +1,59 @@
-import type { LoopState, Phase } from "./types.js";
+import { countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems, isActionableBucketI } from "./ledger.js";
+import type { BucketIItem, BucketIIItem, LoopState, Phase, RejectedItem, ValidationResult } from "./types.js";
+
+function line(value: string): string {
+	return value.trim().replace(/\s+/g, " ");
+}
+
+function inlineList(values: string[], empty = "none"): string {
+	const cleaned = values.map(line).filter(Boolean);
+	return cleaned.length ? cleaned.join(", ") : empty;
+}
+
+function bucketILines(items: BucketIItem[]): string {
+	if (!items.length) return "- none";
+	return items
+		.map((item) => {
+			const marker = isActionableBucketI(item) ? "actionable" : "recorded";
+			return `- [${item.status}; ${marker}] ${line(item.title)} — fix: ${line(item.fix)}; files: ${inlineList(item.files)}`;
+		})
+		.join("\n");
+}
+
+function bucketIILines(items: BucketIIItem[]): string {
+	if (!items.length) return "- none";
+	return items.map((item) => `- [${item.status}] ${line(item.title)} — recommended: ${line(item.recommendedAction)}`).join("\n");
+}
+
+function validationLines(records: ValidationResult[]): string {
+	if (!records.length) return "- none";
+	return records.slice(-5).map((record) => `- [${record.result}] ${record.phase}: ${line(record.command)} — ${line(record.notes)}`).join("\n");
+}
+
+function rejectedLines(items: RejectedItem[]): string {
+	if (!items.length) return "- none";
+	return items.slice(-5).map((item) => `- ${line(item.title)} — ${line(item.reason)}`).join("\n");
+}
+
+export function renderLedgerSummary(state: LoopState): string {
+	const currentBucketI = currentBucketIItems(state.bucketI);
+	const currentBucketII = currentBucketIIItems(state.bucketII);
+	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
+	return `Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none yet"}
+Changed files: ${inlineList(state.filesChanged)}
+
+Bucket I current view (${currentBucketI.length} current / ${state.bucketI.length} ledger entries):
+${bucketILines(currentBucketI)}
+
+Bucket II decision items (${unresolvedBucketII} unresolved / ${currentBucketII.length} current):
+${bucketIILines(currentBucketII)}
+
+Recent validation:
+${validationLines(state.validation)}
+
+Rejected / kept as-is:
+${rejectedLines(state.rejectedOrKeptAsIs)}`;
+}
 
 function commonHeader(state: LoopState, phase: Phase): string {
 	return `Post-review-loop is active.
@@ -7,10 +62,14 @@ Scope: ${state.scope}
 Phase: ${phase}
 Iteration: ${state.iteration}/${state.limit}
 
+Current ledger:
+${renderLedgerSummary(state)}
+
 Rules:
 - Inspect real files and diffs. Do not rely only on summaries.
 - Keep Bucket I narrow: concrete, safe, in-scope, worthwhile, and root-cause fixable now.
 - Put real issues that need user/product/architecture decisions in Bucket II.
+- For Bucket II, submit only new or materially changed decision items. To update an existing item, reuse its title verbatim; do not resubmit unchanged existing items.
 - Reject speculative polish, noisy preferences, and future-proofing.
 - Prefer integrated design fixes over wrappers, compatibility layers, and bandages.
 - At the end of this phase, call post_review_loop_submit_phase_result with structured facts.

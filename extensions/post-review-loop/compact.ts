@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { phasePrompt } from "./prompts.js";
+import { phasePrompt, renderLedgerSummary } from "./prompts.js";
 import type { LoopState } from "./types.js";
 
 type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
@@ -52,6 +52,9 @@ Drop verbose raw tool output, stale alternatives, repeated reasoning, and implem
 
 Changed files:
 ${formatList(state.filesChanged)}
+
+Persisted ledger summary:
+${renderLedgerSummary(state)}
 
 Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${state.lastGate.reason}` : "none"}`;
 }

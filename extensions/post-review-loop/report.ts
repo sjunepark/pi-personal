@@ -1,3 +1,4 @@
+import { countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import type { BucketIItem, BucketIIItem, CodeChange, LoopState, RejectedItem, ValidationResult } from "./types.js";
 
 const BASELINE_MODE_LABELS: Record<string, string> = {
@@ -95,6 +96,58 @@ function renderPhases(state: LoopState): string {
 		.join("\n");
 }
 
+export function renderCurrentReport(state: LoopState): string {
+	const baselineKind = BASELINE_MODE_LABELS[state.baseline.mode] ?? state.baseline.mode;
+	const afterReviewKind = AFTER_REVIEW_MODE_LABELS[state.afterReviewCommit.mode] ?? state.afterReviewCommit.mode;
+	const currentBucketI = currentBucketIItems(state.bucketI);
+	const currentBucketII = currentBucketIIItems(state.bucketII);
+	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
+	return [
+		"# Post-Implementation Review Loop Current Ledger",
+		"",
+		"This is an in-progress ledger preview. It is not a final report and does not stop the loop.",
+		"",
+		"## Current Status",
+		"",
+		`- Lifecycle: ${state.lifecycle}`,
+		`- Current phase: ${state.phase}`,
+		`- Iterations: ${state.iteration}/${state.limit}`,
+		`- Scope: ${line(state.scope)}`,
+		`- Before-review baseline: \`${state.baseline.ref}\` (${baselineKind})`,
+		`- After-review commit: \`${state.afterReviewCommit.ref}\` (${afterReviewKind})`,
+		`- Files changed by loop: ${list(state.filesChanged)}`,
+		`- Bucket I current findings: ${currentBucketI.length} (${state.bucketI.length} ledger entries)`,
+		`- Bucket II unresolved/current findings: ${unresolvedBucketII}/${currentBucketII.length} (${state.bucketII.length} stored entries)`,
+		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none"}`,
+		"- Verdict: in progress — no final verdict has been rendered",
+		"",
+		"## Phases Run",
+		"",
+		renderPhases(state),
+		"",
+		"## Validation",
+		"",
+		renderValidation(state.validation),
+		"",
+		"## Bucket I — Current Findings and Fixes",
+		"",
+		renderBucketI(currentBucketI),
+		"",
+		"## Bucket II — Findings and Recommendations",
+		"",
+		renderBucketII(currentBucketII),
+		"",
+		"## Code Changes Applied",
+		"",
+		renderCodeChanges(state.codeChanges),
+		"",
+		"## Rejected / Kept As-Is",
+		"",
+		renderRejected(state.rejectedOrKeptAsIs),
+		"",
+	].join("\n");
+}
+
 export function renderFinalReport(state: LoopState): string {
 	const baselineKind = BASELINE_MODE_LABELS[state.baseline.mode] ?? state.baseline.mode;
 	const afterReviewKind = AFTER_REVIEW_MODE_LABELS[state.afterReviewCommit.mode] ?? state.afterReviewCommit.mode;
@@ -103,6 +156,7 @@ export function renderFinalReport(state: LoopState): string {
 	const stopReason = state.lastGate?.reason ?? "report requested before a final stop gate";
 	const finalCleanCondition = state.finalCleanCondition ?? (hasStopGate && verdict.startsWith("Loop clean") ? "No accepted/actionable Bucket I findings remain." : "Loop stopped before clean condition was proven.");
 	const finalDiffInspection = state.finalDiffInspection ?? "Inspect the changed files and validation table above.";
+	const currentBucketII = currentBucketIIItems(state.bucketII);
 
 	return [
 		"# Post-Implementation Review Loop Report",
@@ -135,7 +189,7 @@ export function renderFinalReport(state: LoopState): string {
 		"",
 		"## Bucket II — Findings and Recommendations",
 		"",
-		renderBucketII(state.bucketII),
+		renderBucketII(currentBucketII),
 		"",
 		"## Code Changes Applied",
 		"",

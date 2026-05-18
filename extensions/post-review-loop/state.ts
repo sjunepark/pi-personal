@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { decideNext } from "./gate.js";
+import { countCurrentUnresolvedBucketII, mergeBucketIIItems } from "./ledger.js";
 import { defaultAfterReviewCommit, normalizeAfterReviewCommit } from "./git.js";
 import type { BaselineState, GateDecision, GateSnapshot, LoopEntry, LoopState, Phase, PhaseResult } from "./types.js";
 import { DEFAULT_LIMIT, ENTRY_TYPE, MAX_SCOPE_CHARS } from "./types.js";
@@ -47,6 +48,7 @@ function countForPhase(state: LoopState, result: PhaseResult): GateSnapshot {
 	const bucketICandidates = result.bucketI.filter((item) => item.status === "candidate" || item.status === "remaining" || item.status === "accepted").length;
 	const acceptedBucketI = result.bucketI.filter((item) => item.status === "accepted" || item.status === "remaining").length;
 	const appliedBucketI = result.bucketI.filter((item) => item.status === "applied").length || result.codeChanges.length;
+	const bucketII = countCurrentUnresolvedBucketII([...state.bucketII, ...result.bucketII]);
 	return {
 		phase: result.phase,
 		iteration: result.iteration,
@@ -58,7 +60,7 @@ function countForPhase(state: LoopState, result: PhaseResult): GateSnapshot {
 		bucketICandidates,
 		acceptedBucketI,
 		appliedBucketI,
-		bucketII: result.bucketII.length,
+		bucketII,
 	};
 }
 
@@ -155,6 +157,7 @@ export class ReviewLoopRuntime {
 		const nextIteration = gate.decision === "continue" && result.phase === "impl" && gate.nextPhase === "post-review" ? this.#state.iteration + 1 : this.#state.iteration;
 		const nextPhase = gate.decision === "continue" ? gate.nextPhase : "final-report";
 		const lifecycle = gate.decision === "continue" ? "checkpointing" : "complete";
+		const bucketII = mergeBucketIIItems(this.#state.bucketII, result.bucketII);
 
 		this.#state = {
 			...this.#state,
@@ -165,7 +168,7 @@ export class ReviewLoopRuntime {
 			filesChanged: unique([...this.#state.filesChanged, ...result.changedFiles, ...result.codeChanges.flatMap((item) => item.files)]),
 			validation: [...this.#state.validation, ...result.validation],
 			bucketI: [...this.#state.bucketI, ...result.bucketI],
-			bucketII: [...this.#state.bucketII, ...result.bucketII],
+			bucketII,
 			codeChanges: [...this.#state.codeChanges, ...result.codeChanges],
 			rejectedOrKeptAsIs: [...this.#state.rejectedOrKeptAsIs, ...result.rejectedOrKeptAsIs],
 			phasesRun: [

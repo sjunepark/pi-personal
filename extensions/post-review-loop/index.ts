@@ -1,17 +1,29 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ReviewLoopCompactor } from "./compact.js";
 import { establishBaseline } from "./git.js";
-import { phasePrompt, resumePrompt } from "./prompts.js";
-import { renderFinalReport } from "./report.js";
+import { countCurrentActionableBucketI, countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems } from "./ledger.js";
+import { phasePrompt, renderLedgerSummary, resumePrompt } from "./prompts.js";
+import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
 import type { LoopState, PhaseResult } from "./types.js";
 import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
+type MarkdownConstructor = new (text: string, paddingX: number, paddingY: number, theme: unknown) => unknown;
+type RuntimeDeps = { Markdown: MarkdownConstructor; getMarkdownTheme: () => unknown };
+type PendingMarkdownMessage = { title: string; markdown: string };
 
 const runtime = new ReviewLoopRuntime();
 const compactor = new ReviewLoopCompactor();
+let runtimeDeps: RuntimeDeps | undefined;
+const pendingMarkdownMessages: PendingMarkdownMessage[] = [];
+let agentActive = false;
+const MARKDOWN_MESSAGE_TYPE = "post-review-loop-markdown";
 
 const PhaseSchema = Type.Union([Type.Literal("post-review"), Type.Literal("impl-review"), Type.Literal("impl")]);
 const ValidationStatusSchema = Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]);
@@ -97,13 +109,95 @@ function textToolResult(text: string, details?: unknown, isError = false, termin
 	return { content: [{ type: "text", text }], details, isError, terminate };
 }
 
+function loadRuntimeDeps(): RuntimeDeps {
+	const runtimeEntry = getRuntimeRequireTarget();
+	const requireFromRuntime = createRequire(runtimeEntry);
+	const runtimeDir = dirname(runtimeEntry);
+	const pi = requireFirst(requireFromRuntime, [join(runtimeDir, "index.js"), join(dirname(runtimeDir), "index.js")]);
+	const tui = requireFirst(requireFromRuntime, ["@mariozechner/pi-tui", "@earendil-works/pi-tui"]);
+	return { Markdown: tui.Markdown as MarkdownConstructor, getMarkdownTheme: pi.getMarkdownTheme as () => unknown };
+}
+
+function requireFirst(requireFromRuntime: (id: string) => any, candidates: string[]): any {
+	let lastError: unknown;
+	for (const candidate of candidates) {
+		try {
+			return requireFromRuntime(candidate);
+		} catch (error) {
+			lastError = error;
+		}
+	}
+	throw lastError;
+}
+
+function getRuntimeRequireTarget(): string {
+	const runtimeEntry = process.argv[1];
+	if (runtimeEntry?.includes("/")) {
+		try {
+			return realpathSync(runtimeEntry);
+		} catch {
+			return runtimeEntry;
+		}
+	}
+	return fileURLToPath(import.meta.url);
+}
+
+function getRuntimeDeps(): RuntimeDeps {
+	runtimeDeps ??= loadRuntimeDeps();
+	return runtimeDeps;
+}
+
+function markdownComponent(markdown: string): any {
+	const deps = getRuntimeDeps();
+	return new deps.Markdown(markdown, 1, 1, deps.getMarkdownTheme());
+}
+
+function sendMarkdownMessage(
+	pi: ExtensionAPI,
+	title: string,
+	markdown: string,
+	options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean },
+): void {
+	pi.sendMessage(
+		{
+			customType: MARKDOWN_MESSAGE_TYPE,
+			content: title,
+			display: true,
+			details: { markdown },
+		},
+		options,
+	);
+}
+
+function queueMarkdownMessageAfterAgent(title: string, markdown: string): void {
+	pendingMarkdownMessages.push({ title, markdown });
+}
+
+function showMarkdownMessage(pi: ExtensionAPI, title: string, markdown: string): void {
+	if (agentActive) {
+		queueMarkdownMessageAfterAgent(title, markdown);
+		return;
+	}
+	sendMarkdownMessage(pi, title, markdown);
+}
+
+function flushQueuedMarkdownMessagesAfterAgent(pi: ExtensionAPI): void {
+	const messages = pendingMarkdownMessages.splice(0);
+	if (!messages.length) return;
+	setTimeout(() => {
+		for (const message of messages) sendMarkdownMessage(pi, message.title, message.markdown);
+	}, 0);
+}
+
 function compactText(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
 
-function statusText(state: LoopState | null): string {
-	if (!state) return "No post-review-loop state.";
-	const bucketIActionable = state.bucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining").length;
+function statusLines(state: LoopState): string[] {
+	const currentBucketI = currentBucketIItems(state.bucketI);
+	const currentBucketII = currentBucketIIItems(state.bucketII);
+	const bucketIIUnresolved = countCurrentUnresolvedBucketII(state.bucketII);
+	const bucketIActionable = countCurrentActionableBucketI(state.bucketI);
 	const failedValidation = state.validation.filter((item) => item.result === "failed").length;
 	return [
 		`post-review-loop: ${state.lifecycle}`,
@@ -112,14 +206,22 @@ function statusText(state: LoopState | null): string {
 		`scope: ${compactText(state.scope)}`,
 		`baseline: ${state.baseline.ref} (${state.baseline.mode})`,
 		`after-review: ${state.afterReviewCommit.ref} (${state.afterReviewCommit.mode})`,
-		`Bucket I actionable/pending total: ${bucketIActionable}/${state.bucketI.length}`,
-		`Bucket II: ${state.bucketII.length}`,
+		`Bucket I current actionable/pending: ${bucketIActionable}/${currentBucketI.length} (${state.bucketI.length} ledger entries)`,
+		`Bucket II unresolved/current: ${bucketIIUnresolved}/${currentBucketII.length}`,
 		`validation: ${state.validation.length} records, ${failedValidation} failed`,
 		compactor.pending ? "checkpoint: pending" : "checkpoint: none",
 		state.lastError ? `last error: ${state.lastError}` : undefined,
-	]
-		.filter(Boolean)
-		.join("\n");
+	].filter((line): line is string => Boolean(line));
+}
+
+function statusText(state: LoopState | null): string {
+	if (!state) return "No post-review-loop state.";
+	return `${statusLines(state).join("\n")}\n\nLedger:\n${renderLedgerSummary(state)}`;
+}
+
+function statusMarkdown(state: LoopState | null): string {
+	if (!state) return "No post-review-loop state.";
+	return ["# Post-Review Loop Status", "", ...statusLines(state).map((line) => `- ${line}`), "", "## Ledger", "", renderLedgerSummary(state)].join("\n");
 }
 
 function statusBar(state: LoopState | null): string | undefined {
@@ -166,11 +268,21 @@ function parseStartArgs(args: string): { scope: string; limit?: number; reviewOn
 function renderReportOnly(): string {
 	const state = runtime.state;
 	if (!state) throw new Error("No post-review-loop state.");
-	return renderFinalReport(state);
+	return state.lifecycle === "complete" || state.phase === "final-report" ? renderFinalReport(state) : renderCurrentReport(state);
+}
+
+function registerMarkdownRenderer(pi: ExtensionAPI): void {
+	pi.registerMessageRenderer(MARKDOWN_MESSAGE_TYPE, (message) => {
+		const details = message.details as { markdown?: string } | undefined;
+		const fallback = typeof message.content === "string" ? message.content : "";
+		return markdownComponent(details?.markdown ?? fallback);
+	});
 }
 
 function completeWithReport(pi: ExtensionAPI, ctx: ExtensionContext, event: string): string {
-	const report = renderReportOnly();
+	const state = runtime.state;
+	if (!state) throw new Error("No post-review-loop state.");
+	const report = renderFinalReport(state);
 	runtime.completeWithReport(report);
 	persist(pi, ctx, event);
 	return report;
@@ -202,7 +314,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			const restText = rest.join(" ");
 
 			if (subcommand === "status") {
-				notify(ctx, statusText(runtime.state), "info");
+				showMarkdownMessage(pi, "Post-review-loop status", statusMarkdown(runtime.state));
 				return;
 			}
 
@@ -238,7 +350,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			}
 
 			if (subcommand === "report") {
-				notify(ctx, renderReportOnly(), "info");
+				showMarkdownMessage(pi, "Post-review-loop report", renderReportOnly());
 				return;
 			}
 
@@ -250,7 +362,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				}
 				if (state.lifecycle !== "complete") runtime.abort("user stopped the loop");
 				const report = completeWithReport(pi, ctx, "stopped");
-				notify(ctx, report, "info");
+				showMarkdownMessage(pi, "Post-review-loop final report", report);
 				return;
 			}
 
@@ -277,6 +389,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 }
 
 export default function postReviewLoop(pi: ExtensionAPI): void {
+	registerMarkdownRenderer(pi);
 	registerCommand(pi, "post-review-loop");
 	registerCommand(pi, "pr-loop");
 
@@ -289,7 +402,11 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		parameters: Type.Object({}),
 		async execute() {
 			const state = runtime.state;
-			return textToolResult(statusText(state), { state, checkpointPending: compactor.pending });
+			return textToolResult(statusMarkdown(state), { state, checkpointPending: compactor.pending });
+		},
+		renderResult(result) {
+			const text = result.content.find((item) => item.type === "text")?.text ?? "";
+			return markdownComponent(text);
 		},
 	});
 
@@ -301,6 +418,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Call only at the end of the active post-review-loop phase.",
 			"The extension, not the model, decides whether to continue or stop.",
+			"Only submit new or materially changed Bucket II items; reuse the existing title verbatim for updates and omit unchanged existing Bucket II items.",
 			"After a continue result, stop substantial work until the next phase prompt arrives.",
 		],
 		parameters: SubmitPhaseResultSchema,
@@ -311,7 +429,8 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 				persist(pi, ctx, "phase-submitted");
 				if (gate.decision === "stop") {
 					const report = completeWithReport(pi, ctx, "final-report-rendered");
-					return textToolResult(report, { state: runtime.state, gate }, false, true);
+					queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
+					return textToolResult("Post-review-loop stopped. The final report will render as a separate markdown message.", { state: runtime.state, gate }, false, true);
 				}
 
 				const queued = compactor.queue(pi, ctx, state);
@@ -348,7 +467,8 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 			try {
 				runtime.abort(params.reason);
 				const report = completeWithReport(pi, ctx, "aborted");
-				return textToolResult(report, { state: runtime.state }, false, true);
+				queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
+				return textToolResult("Post-review-loop aborted. The final report will render as a separate markdown message.", { state: runtime.state }, false, true);
 			} catch (error) {
 				return textToolResult(error instanceof Error ? error.message : String(error), { state: runtime.state }, true);
 			}
@@ -356,6 +476,8 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", (event, ctx) => {
+		agentActive = false;
+		pendingMarkdownMessages.splice(0);
 		compactor.clear(pi);
 		runtime.restore(latestStateFromSession(ctx));
 		const state = runtime.state;
@@ -386,7 +508,13 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		return reason ? { block: true, reason } : undefined;
 	});
 
+	pi.on("agent_start", () => {
+		agentActive = true;
+	});
+
 	pi.on("agent_end", (_event, ctx) => {
+		agentActive = false;
+		flushQueuedMarkdownMessagesAfterAgent(pi);
 		compactor.runAfterAgent(
 			pi,
 			ctx,
@@ -399,6 +527,8 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", () => {
+		agentActive = false;
+		pendingMarkdownMessages.splice(0);
 		compactor.clear(pi);
 	});
 }
