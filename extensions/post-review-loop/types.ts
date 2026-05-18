@@ -10,7 +10,7 @@ export type Verdict =
 	| "Loop stopped: iteration limit reached"
 	| "Loop stopped: validation failure remains"
 	| "Loop stopped: scope or context needed"
-	| "Loop stopped: phase checkpoint unavailable";
+	| "Loop stopped: checkpoint compaction unavailable";
 
 export type BaselineState = {
 	ref: string;

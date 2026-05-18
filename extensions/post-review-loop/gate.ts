@@ -5,7 +5,7 @@ function verdictFor(reason: string): Verdict {
 	if (reason.includes("iteration limit")) return "Loop stopped: iteration limit reached";
 	if (reason.includes("validation")) return "Loop stopped: validation failure remains";
 	if (reason.includes("scope") || reason.includes("context")) return "Loop stopped: scope or context needed";
-	if (reason.includes("checkpoint")) return "Loop stopped: phase checkpoint unavailable";
+	if (reason.includes("checkpoint")) return "Loop stopped: checkpoint compaction unavailable";
 	return "Loop clean: no accepted/actionable Bucket I findings remain";
 }
 
@@ -27,7 +27,7 @@ export function decideNext(snapshot: GateSnapshot): GateDecision {
 	if (snapshot.limit < 1) throw new Error("limit must be at least 1");
 	if (snapshot.iteration < 1) throw new Error("iteration must be at least 1");
 
-	if (snapshot.checkpointUnavailable) return stop("phase checkpoint unavailable");
+	if (snapshot.checkpointUnavailable) return stop("checkpoint compaction unavailable");
 	if (snapshot.reviewOnly) return stop("user requested a review-only pass");
 	if (snapshot.scopeBlocked) return stop("scope or context is missing");
 	if (snapshot.validationBlocked) return stop("validation is blocking safe continuation");
