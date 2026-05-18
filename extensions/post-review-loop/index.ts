@@ -319,7 +319,16 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 				if (!queued) return textToolResult("A checkpoint is already pending. Stop substantial work and wait for the next phase prompt.", { state, gate }, true, true);
 				return textToolResult(
 					`Phase result accepted. Gate decision: continue to ${gate.nextPhase}. Checkpoint compaction is queued; stop substantial work for this turn.`,
-					{ state, gate, checkpointPending: true },
+					{
+						state,
+						gate,
+						checkpointPending: true,
+						notify: {
+							suppressCompletion: true,
+							status: "Continuing",
+							logMessage: "Post-review-loop phase accepted; checkpoint compaction is queued",
+						},
+					},
 					false,
 					true,
 				);
