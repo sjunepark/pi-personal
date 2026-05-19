@@ -22,6 +22,15 @@ function line(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
 
+function paragraphs(value: string): string {
+	return value
+		.trim()
+		.split(/\n\s*\n/g)
+		.map(line)
+		.filter(Boolean)
+		.join("\n\n");
+}
+
 function list(values: string[], empty = "None"): string {
 	const cleaned = values.map(line).filter(Boolean);
 	return cleaned.length ? cleaned.join(", ") : empty;
@@ -109,8 +118,9 @@ function renderPhases(state: LoopState): string {
 }
 
 export function renderReviewSummary(state: LoopState): string {
-	if (!state.phasesRun.length) return "No completed review summary yet.";
-	return state.phasesRun.map((item) => `- Iteration ${item.iteration} \`${item.phase}\`: ${line(item.summary)}`).join("\n");
+	const target = line(state.scope);
+	const briefing = state.reviewTargetBriefing?.trim() || state.phasesRun.find((item) => item.phase === "post-review")?.summary || "No completed review target briefing yet.";
+	return `**Review target: ${target}**\n\n${paragraphs(briefing)}`;
 }
 
 export function renderCurrentReport(state: LoopState): string {

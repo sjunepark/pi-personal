@@ -24,6 +24,7 @@ let runtimeDeps: RuntimeDeps | undefined;
 const pendingMarkdownMessages: PendingMarkdownMessage[] = [];
 let agentActive = false;
 const MARKDOWN_MESSAGE_TYPE = "post-review-loop-markdown";
+const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
 
 const PhaseSchema = Type.Union([Type.Literal("post-review"), Type.Literal("impl-review"), Type.Literal("impl")]);
 const ValidationStatusSchema = Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]);
@@ -90,6 +91,13 @@ const SubmitPhaseResultSchema = Type.Object({
 		minLength: 1,
 		description: "Short human-friendly explanation of what was reviewed or changed in this phase; not a file list or bucket list.",
 	}),
+	reviewTargetBriefing: Type.Optional(
+		Type.String({
+			minLength: 1,
+			description:
+				"One or two teaching-style paragraphs for the final What Was Reviewed section. Explain the review target itself, such as the uncommitted changes or named feature/refactor, not phase activity.",
+		}),
+	),
 	changedFiles: Type.Array(Type.String(), { description: "Files inspected, reviewed, or touched in this phase; not proof that the loop edited them." }),
 	validation: Type.Array(ValidationSchema),
 	bucketI: Type.Array(BucketISchema),
@@ -388,11 +396,8 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 					if (!ok) return;
 				}
 				const parsed = parseStartArgs(restText);
-				if (!parsed.scope) {
-					const input = await ctx.ui.input("Post-review-loop scope", "Describe the files, diff, or implementation to review.");
-					parsed.scope = input.trim();
-				}
-				const state = startLoop(pi, ctx, parsed.scope, { limit: parsed.limit, reviewOnly: parsed.reviewOnly });
+				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
+				const state = startLoop(pi, ctx, scope, { limit: parsed.limit, reviewOnly: parsed.reviewOnly });
 				notify(ctx, `Post-review-loop started: ${compactText(state.scope)}`, "info");
 				sendPhasePrompt(pi, state);
 				return;

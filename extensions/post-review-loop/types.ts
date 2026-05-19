@@ -77,8 +77,13 @@ export type PhaseHistoryItem = {
 export type PhaseResult = {
 	phase: Phase;
 	iteration: number;
-	/** Short human-friendly explanation of the reviewed/changed code or behavior; not a file list. */
+	/** Short human-friendly explanation of the reviewed/changed code or behavior in this phase; not a file list. */
 	summary: string;
+	/**
+	 * Target-oriented briefing for the final "What Was Reviewed" section.
+	 * Describe the review target itself in one or two teaching-style paragraphs, not the loop phase work.
+	 */
+	reviewTargetBriefing?: string;
 	/** Files inspected, reviewed, or touched during the phase; codeChanges is the authoritative edit ledger. */
 	changedFiles: string[];
 	validation: ValidationResult[];
@@ -132,6 +137,8 @@ export type LoopState = {
 	afterReviewCommit: AfterReviewCommitState;
 	createdAt: number;
 	updatedAt: number;
+	/** Target-oriented briefing for the final "What Was Reviewed" section. */
+	reviewTargetBriefing?: string;
 	/** Union of submitted phase-scope files. Do not treat this as proof of loop edits. */
 	filesChanged: string[];
 	validation: ValidationResult[];

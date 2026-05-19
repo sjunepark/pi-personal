@@ -158,6 +158,7 @@ export class ReviewLoopRuntime {
 		const nextPhase = gate.decision === "continue" ? gate.nextPhase : "final-report";
 		const lifecycle = gate.decision === "continue" ? "checkpointing" : "complete";
 		const bucketII = mergeBucketIIItems(this.#state.bucketII, result.bucketII);
+		const reviewTargetBriefing = result.reviewTargetBriefing?.trim() || this.#state.reviewTargetBriefing;
 
 		this.#state = {
 			...this.#state,
@@ -165,6 +166,7 @@ export class ReviewLoopRuntime {
 			phase: nextPhase,
 			iteration: nextIteration,
 			updatedAt: now(),
+			reviewTargetBriefing,
 			filesChanged: unique([...this.#state.filesChanged, ...result.changedFiles, ...result.codeChanges.flatMap((item) => item.files)]),
 			validation: [...this.#state.validation, ...result.validation],
 			bucketI: [...this.#state.bucketI, ...result.bucketI],

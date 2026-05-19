@@ -40,6 +40,7 @@ export function renderLedgerSummary(state: LoopState): string {
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
 	return `Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none yet"}
+Baseline uncommitted files at loop start: ${inlineList(state.baseline.scopedFiles)}
 Files reviewed / in submitted phase scope: ${inlineList(state.filesChanged)}
 
 Bucket I current view (${currentBucketI.length} current / ${state.bucketI.length} ledger entries):
@@ -67,19 +68,22 @@ ${renderLedgerSummary(state)}
 
 Rules:
 - Inspect real files and diffs. Do not rely only on summaries.
+- When scope is the default "uncommitted changes", review staged changes, unstaged changes, and untracked files from git status/diff unless the user provided a narrower target.
 - Keep Bucket I narrow: concrete, safe, in-scope, worthwhile, and root-cause fixable now.
 - Put real issues that need user/product/architecture decisions in Bucket II.
 - For Bucket II, submit only new or materially changed decision items. To update an existing item, reuse its title verbatim; do not resubmit unchanged existing items.
 - Reject speculative polish, noisy preferences, and future-proofing.
 - Prefer integrated design fixes over wrappers, compatibility layers, and bandages.
-- Write the phase summary as a short, human-friendly explanation of what code or behavior you reviewed/changed; do not use it as a file list or findings list.
+- Write the phase summary as a short, human-friendly explanation of what code or behavior this phase reviewed/changed; do not use it as a file list or findings list.
+- For the first post-review phase, also submit reviewTargetBriefing: one or two kind, teaching-style paragraphs that explain the review target itself. If the target is uncommitted changes, brief the user on what those changes implement or refactor, the main flow, and why the changed area matters. Do not describe the loop phases.
 - At the end of this phase, call post_review_loop_submit_phase_result with structured facts.
 - Do not freehand the final report; the extension renders it.`;
 }
 
 function bucketSchemaReminder(): string {
 	return `Structured result reminders:
-- summary should be 1-3 short sentences in compact change-explainer style: what the reviewed/changed code now does and why that mattered.
+- summary should be 1-3 short sentences in compact change-explainer style: what this phase reviewed/changed and why that mattered.
+- reviewTargetBriefing, when supplied, feeds the final "What Was Reviewed" section. It should explain the review target, not the phase activity: use one or two approachable paragraphs with enough context that the user does not need a separate change-explainer pass.
 - validation is required. For review-only/planning phases, use result "skipped" with notes explaining no code changed.
 - changedFiles lists files inspected, reviewed, or touched during this phase; it is not evidence that the loop edited those files.
 - codeChanges is the authoritative record of loop edits and should be empty unless this phase edited code.
