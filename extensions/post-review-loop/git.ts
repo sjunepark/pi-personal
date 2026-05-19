@@ -13,6 +13,14 @@ function safeGit(cwd: string, args: string[]): string | undefined {
 	}
 }
 
+function unique(values: string[]): string[] {
+	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function loopEditedFiles(state: LoopState): string[] {
+	return unique(state.codeChanges.flatMap((item) => item.files));
+}
+
 export function scopedFilesFromStatus(cwd: string): string[] {
 	const status = safeGit(cwd, ["status", "--short"]);
 	if (!status) return [];
@@ -47,8 +55,9 @@ export function defaultAfterReviewCommit(): AfterReviewCommitState {
 
 export function normalizeAfterReviewCommit(state: LoopState): AfterReviewCommitState {
 	if (!state.codeChanges.length) return defaultAfterReviewCommit();
+	const files = loopEditedFiles(state);
 	const failed = state.validation.some((item) => item.result === "failed");
-	if (failed) return { ref: "None", mode: "skipped-validation-failed", files: state.filesChanged };
-	if (state.lastGate?.verdict === "Loop stopped: scope or context needed") return { ref: "None", mode: "skipped-scope-blocked", files: state.filesChanged };
-	return { ref: "None", mode: "left-uncommitted", files: state.filesChanged };
+	if (failed) return { ref: "None", mode: "skipped-validation-failed", files };
+	if (state.lastGate?.verdict === "Loop stopped: scope or context needed") return { ref: "None", mode: "skipped-scope-blocked", files };
+	return { ref: "None", mode: "left-uncommitted", files };
 }

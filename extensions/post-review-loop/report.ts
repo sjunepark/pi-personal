@@ -27,6 +27,18 @@ function list(values: string[], empty = "None"): string {
 	return cleaned.length ? cleaned.join(", ") : empty;
 }
 
+function unique(values: string[]): string[] {
+	return Array.from(new Set(values.map(line).filter(Boolean)));
+}
+
+function loopEditedFiles(state: LoopState): string[] {
+	return unique(state.codeChanges.flatMap((item) => item.files));
+}
+
+function renderFileScopeLines(state: LoopState): string[] {
+	return [`- Files reviewed / in submitted phase scope: ${list(state.filesChanged)}`, `- Files edited by loop: ${list(loopEditedFiles(state))}`];
+}
+
 function escapeTable(value: string): string {
 	return line(value).replace(/\|/g, "\\|");
 }
@@ -115,7 +127,7 @@ export function renderCurrentReport(state: LoopState): string {
 		`- Scope: ${line(state.scope)}`,
 		`- Before-review baseline: \`${state.baseline.ref}\` (${baselineKind})`,
 		`- After-review commit: \`${state.afterReviewCommit.ref}\` (${afterReviewKind})`,
-		`- Files changed by loop: ${list(state.filesChanged)}`,
+		...renderFileScopeLines(state),
 		`- Bucket I current findings: ${currentBucketI.length} (${state.bucketI.length} ledger entries)`,
 		`- Bucket II unresolved/current findings: ${unresolvedBucketII}/${currentBucketII.length} (${state.bucketII.length} stored entries)`,
 		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none"}`,
@@ -155,7 +167,7 @@ export function renderFinalReport(state: LoopState): string {
 	const verdict = hasStopGate ? state.lastGate!.verdict : "Loop stopped: scope or context needed";
 	const stopReason = state.lastGate?.reason ?? "report requested before a final stop gate";
 	const finalCleanCondition = state.finalCleanCondition ?? (hasStopGate && verdict.startsWith("Loop clean") ? "No accepted/actionable Bucket I findings remain." : "Loop stopped before clean condition was proven.");
-	const finalDiffInspection = state.finalDiffInspection ?? "Inspect the changed files and validation table above.";
+	const finalDiffInspection = state.finalDiffInspection ?? "Inspect the reviewed/edited file lists and validation table above.";
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 
 	return [
@@ -169,7 +181,7 @@ export function renderFinalReport(state: LoopState): string {
 		`- After-review files: ${list(state.afterReviewCommit.files)}`,
 		`- Scope: ${line(state.scope)}`,
 		`- Iterations: ${state.iteration}/${state.limit}`,
-		`- Files changed by loop: ${list(state.filesChanged)}`,
+		...renderFileScopeLines(state),
 		`- Stop reason: ${line(stopReason)}`,
 		`- Final clean condition: ${line(finalCleanCondition)}`,
 		`- Final diff / validation confirmation: ${line(finalDiffInspection)}`,

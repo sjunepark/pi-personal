@@ -40,7 +40,7 @@ export function renderLedgerSummary(state: LoopState): string {
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
 	return `Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none yet"}
-Changed files: ${inlineList(state.filesChanged)}
+Files reviewed / in submitted phase scope: ${inlineList(state.filesChanged)}
 
 Bucket I current view (${currentBucketI.length} current / ${state.bucketI.length} ledger entries):
 ${bucketILines(currentBucketI)}
@@ -79,10 +79,11 @@ Rules:
 function bucketSchemaReminder(): string {
 	return `Structured result reminders:
 - validation is required. For review-only/planning phases, use result "skipped" with notes explaining no code changed.
+- changedFiles lists files inspected, reviewed, or touched during this phase; it is not evidence that the loop edited those files.
+- codeChanges is the authoritative record of loop edits and should be empty unless this phase edited code.
 - bucketI items need title, revealed, status, fix, files, bandageReason, and validation references.
 - bucketII items need title, revealed, weakness, options, recommendedAction, tradeoffs, and status.
-- rejectedOrKeptAsIs should explain why a possible finding was rejected or kept.
-- codeChanges should be empty unless this phase edited code.`;
+- rejectedOrKeptAsIs should explain why a possible finding was rejected or kept.`;
 }
 
 export function phasePrompt(state: LoopState, phase: Phase = state.phase as Phase): string {

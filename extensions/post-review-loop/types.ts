@@ -78,6 +78,7 @@ export type PhaseResult = {
 	phase: Phase;
 	iteration: number;
 	summary: string;
+	/** Files inspected, reviewed, or touched during the phase; codeChanges is the authoritative edit ledger. */
 	changedFiles: string[];
 	validation: ValidationResult[];
 	bucketI: BucketIItem[];
@@ -130,6 +131,7 @@ export type LoopState = {
 	afterReviewCommit: AfterReviewCommitState;
 	createdAt: number;
 	updatedAt: number;
+	/** Union of submitted phase-scope files. Do not treat this as proof of loop edits. */
 	filesChanged: string[];
 	validation: ValidationResult[];
 	bucketI: BucketIItem[];

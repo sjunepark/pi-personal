@@ -41,7 +41,7 @@ Keep:
 - next phase: ${state.phase}
 - iteration: ${state.iteration}/${state.limit}
 - last completed phase summary: ${lastPhaseSummary(state)}
-- changed files
+- files reviewed / in submitted phase scope
 - validation commands and results
 - Bucket I findings applied, accepted, remaining, rejected, or downgraded
 - Bucket II decision items and recommended actions
@@ -50,7 +50,7 @@ Keep:
 
 Drop verbose raw tool output, stale alternatives, repeated reasoning, and implementation details not needed for the next phase.
 
-Changed files:
+Files reviewed / in submitted phase scope:
 ${formatList(state.filesChanged)}
 
 Persisted ledger summary:
