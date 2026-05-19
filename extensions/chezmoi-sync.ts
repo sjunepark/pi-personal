@@ -71,8 +71,15 @@ type RepoState = {
 type SyncState = {
 	managedStatus: string;
 	managedDrift: boolean;
+	pendingScriptRuns: boolean;
 	chezmoiRepo?: RepoState;
 	piPersonalRepo?: RepoState;
+};
+
+type ManagedStatusEntry = {
+	code: string;
+	path: string;
+	isScriptRun: boolean;
 };
 
 type PublishTarget = {
@@ -141,6 +148,30 @@ function normalizeTarget(target: string): string {
 
 function normalizeTargets(args: string[]): string[] {
 	return args.map(normalizeTarget);
+}
+
+function parseManagedStatusEntries(status: string): ManagedStatusEntry[] {
+	return status
+		.split("\n")
+		.map((line) => {
+			const match = line.match(/^(.)(.)\s+(.+)$/);
+			if (!match) return undefined;
+			const code = `${match[1]}${match[2]}`;
+			return { code, path: match[3].trim(), isScriptRun: code[1] === "R" };
+		})
+		.filter((entry): entry is ManagedStatusEntry => Boolean(entry));
+}
+
+function managedFileTargets(status: string): string[] {
+	return parseManagedStatusEntries(status)
+		.filter((entry) => !entry.isScriptRun)
+		.map((entry) => entry.path);
+}
+
+function pendingScriptNames(status: string): string[] {
+	return parseManagedStatusEntries(status)
+		.filter((entry) => entry.isScriptRun)
+		.map((entry) => entry.path);
 }
 
 function formatCommand(command: string, args: string[]): string {
@@ -309,7 +340,7 @@ function hasOutbound(state: SyncState): boolean {
 }
 
 function hasPendingWork(state: SyncState): boolean {
-	return state.managedDrift || hasInbound(state) || hasOutbound(state);
+	return state.managedDrift || state.pendingScriptRuns || hasInbound(state) || hasOutbound(state);
 }
 
 async function inspectSyncState(pi: ExtensionAPI): Promise<SyncState> {
@@ -320,7 +351,8 @@ async function inspectSyncState(pi: ExtensionAPI): Promise<SyncState> {
 
 	return {
 		managedStatus,
-		managedDrift: managedStatus.length > 0,
+		managedDrift: managedFileTargets(managedStatus).length > 0,
+		pendingScriptRuns: pendingScriptNames(managedStatus).length > 0,
 		chezmoiRepo: chezmoiSource ? await inspectRepo(pi, "chezmoi", "chezmoi source", chezmoiSource) : undefined,
 		piPersonalRepo: piPersonalSource ? await inspectRepo(pi, "pi-personal", "pi-personal package", piPersonalSource) : undefined,
 	};
@@ -359,9 +391,14 @@ function renderSyncReview(state: SyncState): string {
 	if (managedTargets.length > managedTargetLines.length) {
 		managedTargetLines.push(`  - …and ${countLabel(managedTargets.length - managedTargetLines.length, "more file")}`);
 	}
+	const pendingScripts = state.pendingScriptRuns ? pendingScriptNames(state.managedStatus) : [];
+	const pendingScriptLines = pendingScripts.slice(0, 8).map((script) => `  - ${script}`);
+	if (pendingScripts.length > pendingScriptLines.length) {
+		pendingScriptLines.push(`  - …and ${countLabel(pendingScripts.length - pendingScriptLines.length, "more script")}`);
+	}
 
 	const nextSteps: string[] = [];
-	if (!hasRemoteChanges && !hasLocalRepoChanges && !state.managedDrift) {
+	if (!hasRemoteChanges && !hasLocalRepoChanges && !state.managedDrift && !state.pendingScriptRuns) {
 		nextSteps.push("- Nothing to do. Local files, local source repos, and remotes look current.");
 	} else {
 		if (state.managedDrift) {
@@ -370,6 +407,7 @@ function renderSyncReview(state: SyncState): string {
 			nextSteps.push("  - Restore the chezmoi source version onto this machine: `/chezmoi-sync apply <target>`.");
 			nextSteps.push("  - Inspect the exact difference first: `/chezmoi-sync diff`.");
 		}
+		if (state.pendingScriptRuns) nextSteps.push("- Run `/chezmoi-sync apply` to let chezmoi run and record the pending script action(s).");
 		if (hasRemoteChanges) nextSteps.push("- Pull remote updates into this machine: `/chezmoi-sync sync`.");
 		if (hasLocalRepoChanges) nextSteps.push("- Publish reviewed local repo changes: `/chezmoi-sync publish`.");
 	}
@@ -387,6 +425,7 @@ function renderSyncReview(state: SyncState): string {
 		"",
 		"## At a glance",
 		`- Local machine ↔ local chezmoi source: ${state.managedDrift ? "needs a decision" : "clean"}`,
+		`- Chezmoi apply-time scripts: ${state.pendingScriptRuns ? "pending" : "none pending"}`,
 		`- Local chezmoi source ↔ remote: ${repoWorkSummary(state.chezmoiRepo)}`,
 		`- pi-personal package ↔ remote: ${repoWorkSummary(state.piPersonalRepo)}`,
 		"",
@@ -397,6 +436,12 @@ function renderSyncReview(state: SyncState): string {
 					...(managedTargetLines.length > 0 ? managedTargetLines : ["  - Run `/chezmoi-sync status` to see the changed targets."]),
 				]
 			: ["- No local machine/source drift detected."]),
+		...(state.pendingScriptRuns
+			? [
+					"- Chezmoi has apply-time script action(s) scheduled.",
+					...(pendingScriptLines.length > 0 ? pendingScriptLines : ["  - Run `/chezmoi-sync status` to see the pending scripts."]),
+				]
+			: ["- No chezmoi scripts are waiting to run."]),
 		...(hasRemoteChanges
 			? [
 					...(state.chezmoiRepo?.behind ? [`- Remote chezmoi has ${countLabel(state.chezmoiRepo.behind, "commit")} not on this machine.`] : []),
@@ -443,6 +488,7 @@ async function refreshStatus(pi: ExtensionAPI, ctx: ExtensionContext, state?: Sy
 	if (hasInbound(syncState)) labels.push("in");
 	if (hasOutbound(syncState)) labels.push("out");
 	if (syncState.managedDrift) labels.push("drift");
+	if (syncState.pendingScriptRuns) labels.push("apply");
 	ctx.ui.setStatus(STATUS_KEY, `chezmoi sync ${labels.join("+")}`);
 }
 
@@ -470,11 +516,7 @@ function usage(): string {
 }
 
 function parseManagedTargetPaths(status: string): string[] {
-	return status
-		.split("\n")
-		.map((line) => line.slice(3).trim())
-		.filter(Boolean)
-		.map((path) => (path.startsWith("/") ? path : join(homedir(), path)));
+	return managedFileTargets(status).map((path) => (path.startsWith("/") ? path : join(homedir(), path)));
 }
 
 function selectablePublishTargets(state: SyncState): PublishTarget[] {
@@ -800,6 +842,7 @@ async function handleStartup(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 			hasInbound(state) ? "inbound" : undefined,
 			hasOutbound(state) ? "outbound" : undefined,
 			state.managedDrift ? "managed-file drift" : undefined,
+			state.pendingScriptRuns ? "apply-time scripts" : undefined,
 		]
 			.filter(Boolean)
 			.join(", ")}.`,
@@ -855,7 +898,7 @@ function registerSyncCommand(pi: ExtensionAPI): void {
 				const args = ["status"];
 				const result = await runChezmoi(pi, args, 10_000);
 				sendOutput(pi, "chezmoi status", formatChezmoiResult("chezmoi status", args, result));
-				notify(ctx, result.code === 0 ? (result.stdout.trim() ? "chezmoi has pending target/source changes." : "chezmoi is clean.") : "chezmoi status failed.", result.code === 0 ? "info" : "error");
+				notify(ctx, result.code === 0 ? (result.stdout.trim() ? "chezmoi has pending target/source changes or script actions." : "chezmoi is clean.") : "chezmoi status failed.", result.code === 0 ? "info" : "error");
 				await refreshStatus(pi, ctx);
 				return;
 			}
