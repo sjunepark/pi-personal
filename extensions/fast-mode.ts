@@ -107,8 +107,13 @@ function restoreState(ctx: ExtensionContext): FastModeState | undefined {
 	};
 }
 
-function getDefaultEnabled(ctx: ExtensionContext): boolean {
-	return getFastSupport(ctx).supported;
+/**
+ * New sessions start with fast mode off. If fast mode should ever become the
+ * default again, use `getFastSupport(ctx).supported` instead of a simple `true`
+ * so unsupported models do not request priority service.
+ */
+function getDefaultEnabled(_ctx: ExtensionContext): boolean {
+	return false;
 }
 
 function formatStatusMessage(ctx: ExtensionContext, enabled: boolean): string {
