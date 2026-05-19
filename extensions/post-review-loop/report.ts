@@ -104,8 +104,13 @@ function renderRejected(records: RejectedItem[]): string {
 function renderPhases(state: LoopState): string {
 	if (!state.phasesRun.length) return "None recorded.";
 	return state.phasesRun
-		.map((item) => `- Iteration ${item.iteration} \`${item.phase}\` — ${line(item.gateDecision)}; ${line(item.summary)}`)
+		.map((item) => `- Iteration ${item.iteration} \`${item.phase}\` — ${line(item.gateDecision)}`)
 		.join("\n");
+}
+
+export function renderReviewSummary(state: LoopState): string {
+	if (!state.phasesRun.length) return "No completed review summary yet.";
+	return state.phasesRun.map((item) => `- Iteration ${item.iteration} \`${item.phase}\`: ${line(item.summary)}`).join("\n");
 }
 
 export function renderCurrentReport(state: LoopState): string {
@@ -132,6 +137,10 @@ export function renderCurrentReport(state: LoopState): string {
 		`- Bucket II unresolved/current findings: ${unresolvedBucketII}/${currentBucketII.length} (${state.bucketII.length} stored entries)`,
 		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none"}`,
 		"- Verdict: in progress — no final verdict has been rendered",
+		"",
+		"## What Was Reviewed",
+		"",
+		renderReviewSummary(state),
 		"",
 		"## Phases Run",
 		"",
@@ -186,6 +195,10 @@ export function renderFinalReport(state: LoopState): string {
 		`- Final clean condition: ${line(finalCleanCondition)}`,
 		`- Final diff / validation confirmation: ${line(finalDiffInspection)}`,
 		`- Verdict: ${verdict}`,
+		"",
+		"## What Was Reviewed",
+		"",
+		renderReviewSummary(state),
 		"",
 		"## Phases Run",
 		"",

@@ -72,12 +72,14 @@ Rules:
 - For Bucket II, submit only new or materially changed decision items. To update an existing item, reuse its title verbatim; do not resubmit unchanged existing items.
 - Reject speculative polish, noisy preferences, and future-proofing.
 - Prefer integrated design fixes over wrappers, compatibility layers, and bandages.
+- Write the phase summary as a short, human-friendly explanation of what code or behavior you reviewed/changed; do not use it as a file list or findings list.
 - At the end of this phase, call post_review_loop_submit_phase_result with structured facts.
 - Do not freehand the final report; the extension renders it.`;
 }
 
 function bucketSchemaReminder(): string {
 	return `Structured result reminders:
+- summary should be 1-3 short sentences in compact change-explainer style: what the reviewed/changed code now does and why that mattered.
 - validation is required. For review-only/planning phases, use result "skipped" with notes explaining no code changed.
 - changedFiles lists files inspected, reviewed, or touched during this phase; it is not evidence that the loop edited those files.
 - codeChanges is the authoritative record of loop edits and should be empty unless this phase edited code.

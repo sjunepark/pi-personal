@@ -29,6 +29,7 @@ The model supplies phase findings, validation, submitted phase-scope files, and 
 - Bucket I history is append-only. Active/current views coalesce findings by normalized title because v1 has no stable finding id; treat that as a display approximation, not a durable identity model.
 - Bucket II decision items are coalesced by normalized title. Later materially changed submissions replace the current view; unchanged existing items should be omitted from new phase submissions.
 - Bucket II gates count only unresolved decision statuses. Items marked `implemented after explicit approval` remain in reports but do not block a clean stop.
+- Phase `summary` is a short human-friendly explanation of what code or behavior was reviewed/changed. It is not a file list or a findings list.
 - `changedFiles` / `filesChanged` means files inspected, reviewed, or touched during submitted phases. `codeChanges` is the authoritative loop-edit ledger and drives “files edited by loop” wording in reports.
 - Checkpoint compaction is internal to this extension. There is no separate model-facing phase compaction tool; models continue by submitting phase results, and the extension decides whether to compact and advance.
 

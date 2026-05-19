@@ -77,6 +77,7 @@ export type PhaseHistoryItem = {
 export type PhaseResult = {
 	phase: Phase;
 	iteration: number;
+	/** Short human-friendly explanation of the reviewed/changed code or behavior; not a file list. */
 	summary: string;
 	/** Files inspected, reviewed, or touched during the phase; codeChanges is the authoritative edit ledger. */
 	changedFiles: string[];

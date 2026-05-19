@@ -8,7 +8,7 @@ import { ReviewLoopCompactor } from "./compact.js";
 import { establishBaseline } from "./git.js";
 import { countCurrentActionableBucketI, countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import { phasePrompt, renderLedgerSummary, resumePrompt } from "./prompts.js";
-import { renderCurrentReport, renderFinalReport } from "./report.js";
+import { renderCurrentReport, renderFinalReport, renderReviewSummary } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
 import type { LoopState, PhaseResult } from "./types.js";
 import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
@@ -86,7 +86,10 @@ const CodeChangeSchema = Type.Object({
 const SubmitPhaseResultSchema = Type.Object({
 	phase: PhaseSchema,
 	iteration: Type.Integer({ minimum: 1 }),
-	summary: Type.String({ minLength: 1 }),
+	summary: Type.String({
+		minLength: 1,
+		description: "Short human-friendly explanation of what was reviewed or changed in this phase; not a file list or bucket list.",
+	}),
 	changedFiles: Type.Array(Type.String(), { description: "Files inspected, reviewed, or touched in this phase; not proof that the loop edited them." }),
 	validation: Type.Array(ValidationSchema),
 	bucketI: Type.Array(BucketISchema),
@@ -216,12 +219,24 @@ function statusLines(state: LoopState): string[] {
 
 function statusText(state: LoopState | null): string {
 	if (!state) return "No post-review-loop state.";
-	return `${statusLines(state).join("\n")}\n\nLedger:\n${renderLedgerSummary(state)}`;
+	return `${statusLines(state).join("\n")}\n\nWhat was reviewed:\n${renderReviewSummary(state)}\n\nLedger:\n${renderLedgerSummary(state)}`;
 }
 
 function statusMarkdown(state: LoopState | null): string {
 	if (!state) return "No post-review-loop state.";
-	return ["# Post-Review Loop Status", "", ...statusLines(state).map((line) => `- ${line}`), "", "## Ledger", "", renderLedgerSummary(state)].join("\n");
+	return [
+		"# Post-Review Loop Status",
+		"",
+		...statusLines(state).map((line) => `- ${line}`),
+		"",
+		"## What Was Reviewed",
+		"",
+		renderReviewSummary(state),
+		"",
+		"## Ledger",
+		"",
+		renderLedgerSummary(state),
+	].join("\n");
 }
 
 function statusBar(state: LoopState | null): string | undefined {
