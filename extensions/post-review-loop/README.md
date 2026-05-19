@@ -14,12 +14,6 @@ Pi extension that owns the post-implementation review loop workflow.
 /post-review-loop clear
 ```
 
-Alias:
-
-```text
-/pr-loop ...
-```
-
 ## Model tools
 
 - `post_review_loop_get_state`

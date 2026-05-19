@@ -226,7 +226,7 @@ function statusMarkdown(state: LoopState | null): string {
 
 function statusBar(state: LoopState | null): string | undefined {
 	if (!state || state.lifecycle === "complete") return undefined;
-	return `pr-loop: ${state.lifecycle} ${state.phase} ${state.iteration}/${state.limit}`;
+	return `post-review-loop: ${state.lifecycle} ${state.phase} ${state.iteration}/${state.limit}`;
 }
 
 function updateStatus(ctx: ExtensionContext): void {
@@ -391,7 +391,6 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 export default function postReviewLoop(pi: ExtensionAPI): void {
 	registerMarkdownRenderer(pi);
 	registerCommand(pi, "post-review-loop");
-	registerCommand(pi, "pr-loop");
 
 	pi.registerTool({
 		name: "post_review_loop_get_state",
