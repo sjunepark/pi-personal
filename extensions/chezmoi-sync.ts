@@ -326,63 +326,103 @@ async function inspectSyncState(pi: ExtensionAPI): Promise<SyncState> {
 	};
 }
 
+function countLabel(count: number, noun: string): string {
+	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function repoWorkSummary(repo: RepoState | undefined): string {
+	if (!repo) return "not found";
+
+	const items: string[] = [];
+	if (repo.behind > 0) items.push(`${countLabel(repo.behind, "remote commit")} to pull`);
+	if (repo.dirty) items.push("uncommitted local changes");
+	if (repo.ahead > 0) items.push(`${countLabel(repo.ahead, "local commit")} to push`);
+	return items.length > 0 ? items.join("; ") : "clean";
+}
+
 function repoSummary(repo: RepoState | undefined): string[] {
-	if (!repo) return ["- not found"];
-	const parts = [`- path: ${repo.path}`];
-	if (repo.branch) parts.push(`- branch: ${repo.branch}`);
-	if (repo.upstream) parts.push(`- upstream: ${repo.upstream}`);
-	if (repo.fetchError) parts.push(`- fetch warning: ${repo.fetchError}`);
-	parts.push(`- dirty: ${repo.dirty ? "yes" : "no"}`);
-	parts.push(`- ahead: ${repo.ahead}`);
-	parts.push(`- behind: ${repo.behind}`);
-	if (repo.status) parts.push("- status:", "```", repo.status, "```");
+	if (!repo) return ["- Not found."];
+
+	const parts = [`- State: ${repoWorkSummary(repo)}`, `- Path: ${repo.path}`];
+	if (repo.branch) parts.push(`- Branch: ${repo.branch}`);
+	if (repo.upstream) parts.push(`- Remote tracking branch: ${repo.upstream}`);
+	if (repo.fetchError) parts.push(`- Fetch warning: ${repo.fetchError}`);
+	if (repo.status) parts.push("- Git status:", "```", repo.status, "```");
 	return parts;
 }
 
 function renderSyncReview(state: SyncState): string {
-	const inbound: string[] = [];
-	const outbound: string[] = [];
-	const decisions: string[] = [];
+	const hasRemoteChanges = hasInbound(state);
+	const hasLocalRepoChanges = Boolean(state.chezmoiRepo?.dirty || state.chezmoiRepo?.ahead || state.piPersonalRepo?.dirty || state.piPersonalRepo?.ahead);
+	const managedTargets = state.managedDrift ? parseManagedTargetPaths(state.managedStatus) : [];
+	const managedTargetLines = managedTargets.slice(0, 8).map((target) => `  - ${target}`);
+	if (managedTargets.length > managedTargetLines.length) {
+		managedTargetLines.push(`  - …and ${countLabel(managedTargets.length - managedTargetLines.length, "more file")}`);
+	}
 
-	if (state.chezmoiRepo?.behind) inbound.push(`- chezmoi source is behind remote by ${state.chezmoiRepo.behind} commit(s)`);
-	if (state.piPersonalRepo?.behind) inbound.push(`- pi-personal package is behind remote by ${state.piPersonalRepo.behind} commit(s)`);
-
-	if (state.managedDrift) decisions.push("- chezmoi-managed target files differ from source; review whether to apply source or add target changes");
-	if (state.chezmoiRepo?.dirty) outbound.push("- chezmoi source has uncommitted changes");
-	if (state.chezmoiRepo?.ahead) outbound.push(`- chezmoi source has ${state.chezmoiRepo.ahead} unpushed commit(s)`);
-	if (state.piPersonalRepo?.dirty) outbound.push("- pi-personal package has uncommitted changes");
-	if (state.piPersonalRepo?.ahead) outbound.push(`- pi-personal package has ${state.piPersonalRepo.ahead} unpushed commit(s)`);
+	const nextSteps: string[] = [];
+	if (!hasRemoteChanges && !hasLocalRepoChanges && !state.managedDrift) {
+		nextSteps.push("- Nothing to do. Local files, local source repos, and remotes look current.");
+	} else {
+		if (state.managedDrift) {
+			nextSteps.push("- First decide which copy is correct for the changed managed files.");
+			nextSteps.push("  - Keep the local machine version: `/chezmoi-sync add <target>` or `/chezmoi-sync add-agents`.");
+			nextSteps.push("  - Restore the chezmoi source version onto this machine: `/chezmoi-sync apply <target>`.");
+			nextSteps.push("  - Inspect the exact difference first: `/chezmoi-sync diff`.");
+		}
+		if (hasRemoteChanges) nextSteps.push("- Pull remote updates into this machine: `/chezmoi-sync sync`.");
+		if (hasLocalRepoChanges) nextSteps.push("- Publish reviewed local repo changes: `/chezmoi-sync publish`.");
+	}
 
 	return [
 		"# Pi sync review",
 		"",
-		"## Summary",
-		`- inbound: ${inbound.length}`,
-		`- outbound: ${outbound.length}`,
-		`- needs decision: ${decisions.length}`,
+		"Pi sync has three places to keep aligned:",
 		"",
-		"## Inbound",
-		...(inbound.length ? inbound : ["- none"]),
+		"```text",
+		"local machine files  ↔  local chezmoi source  ↔  remote chezmoi git",
+		"```",
 		"",
-		"## Outbound",
-		...(outbound.length ? outbound : ["- none"]),
+		"`pi-personal` is also checked as a local git repo with its own remote.",
 		"",
-		"## Needs decision",
-		...(decisions.length ? decisions : ["- none"]),
-		...(state.managedStatus ? ["", "### chezmoi status", "```", state.managedStatus, "```"] : []),
+		"## At a glance",
+		`- Local machine ↔ local chezmoi source: ${state.managedDrift ? "needs a decision" : "clean"}`,
+		`- Local chezmoi source ↔ remote: ${repoWorkSummary(state.chezmoiRepo)}`,
+		`- pi-personal package ↔ remote: ${repoWorkSummary(state.piPersonalRepo)}`,
 		"",
-		"## Repositories",
+		"## What needs attention",
+		...(state.managedDrift
+			? [
+					"- Managed files on this machine differ from the local chezmoi source.",
+					...(managedTargetLines.length > 0 ? managedTargetLines : ["  - Run `/chezmoi-sync status` to see the changed targets."]),
+				]
+			: ["- No local machine/source drift detected."]),
+		...(hasRemoteChanges
+			? [
+					...(state.chezmoiRepo?.behind ? [`- Remote chezmoi has ${countLabel(state.chezmoiRepo.behind, "commit")} not on this machine.`] : []),
+					...(state.piPersonalRepo?.behind ? [`- Remote pi-personal has ${countLabel(state.piPersonalRepo.behind, "commit")} not on this machine.`] : []),
+				]
+			: ["- No remote commits are waiting to be pulled."]),
+		...(hasLocalRepoChanges
+			? [
+					...(state.chezmoiRepo?.dirty ? ["- Local chezmoi source has uncommitted changes."] : []),
+					...(state.chezmoiRepo?.ahead ? [`- Local chezmoi source has ${countLabel(state.chezmoiRepo.ahead, "commit")} not pushed.`] : []),
+					...(state.piPersonalRepo?.dirty ? ["- Local pi-personal has uncommitted changes."] : []),
+					...(state.piPersonalRepo?.ahead ? [`- Local pi-personal has ${countLabel(state.piPersonalRepo.ahead, "commit")} not pushed.`] : []),
+				]
+			: ["- No local repo changes are waiting to be published."]),
 		"",
-		"### chezmoi source",
+		"## Recommended next step",
+		...nextSteps,
+		...(state.managedStatus ? ["", "## Raw chezmoi status", "```", state.managedStatus, "```"] : []),
+		"",
+		"## Technical details",
+		"",
+		"### chezmoi source repo",
 		...repoSummary(state.chezmoiRepo),
 		"",
-		"### pi-personal package",
+		"### pi-personal repo",
 		...repoSummary(state.piPersonalRepo),
-		"",
-		"## Recommended commands",
-		"- Make this machine current: `/chezmoi-sync sync`",
-		"- Publish reviewed local changes: `/chezmoi-sync publish`",
-		"- Inspect managed-file drift: `/chezmoi-sync diff`",
 	].join("\n");
 }
 
