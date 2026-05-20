@@ -112,6 +112,21 @@ function renderValidationFull(records: ValidationResult[]): string {
 	return rows.join("\n");
 }
 
+function renderValidationOutcome(records: ValidationResult[]): string {
+	if (!records.length) return "not recorded";
+	let latestExecuted: ValidationResult | undefined;
+	for (let index = records.length - 1; index >= 0; index -= 1) {
+		if (records[index].result !== "skipped") {
+			latestExecuted = records[index];
+			break;
+		}
+	}
+	if (!latestExecuted) return `skipped — ${line(records[records.length - 1].notes)}`;
+	if (latestExecuted.result === "failed") return `failed — ${line(latestExecuted.command)}`;
+	const hadEarlierFailure = records.some((record) => record.result === "failed");
+	return hadEarlierFailure ? `passed after earlier failures — latest: ${line(latestExecuted.command)}` : `passed — ${line(latestExecuted.command)}`;
+}
+
 function renderBucketI(records: BucketIItem[], empty = "No Bucket I findings were found."): string {
 	if (!records.length) return empty;
 	return records
@@ -385,6 +400,7 @@ function renderFinalReportConcise(state: LoopState): string {
 		`- Verdict: ${verdict}`,
 		`- Stop reason: ${line(stopReason)}`,
 		`- Clean condition: ${line(finalCleanCondition)}`,
+		`- Validation: ${renderValidationOutcome(state.validation)}`,
 		`- Iterations: ${state.iteration}/${state.limit}`,
 		`- Bucket I: ${bucketIOutcomeSummary(currentBucketI)}`,
 		`- Bucket II: ${unresolvedBucketII}/${currentBucketII.length} unresolved/current`,
@@ -400,10 +416,6 @@ function renderFinalReportConcise(state: LoopState): string {
 		"## Remaining Decisions",
 		"",
 		renderBucketIICompact(currentBucketII),
-		"",
-		"## Validation Summary",
-		"",
-		renderValidationSummary(state.validation),
 		"",
 		"## Files Changed Summary",
 		"",
