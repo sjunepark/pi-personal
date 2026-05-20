@@ -78,6 +78,7 @@ Rules:
 - Write the phase summary as a short, human-friendly explanation of what code or behavior this phase reviewed/changed; do not use it as a file list or findings list.
 - For the first post-review phase, also submit reviewTargetBriefing: one or two kind, teaching-style paragraphs that explain the review target itself. If the target is uncommitted changes, brief the user on what those changes implement or refactor, the main flow, and why the changed area matters. Do not describe the loop phases.
 - At the end of this phase, call post_review_loop_submit_phase_result with structured facts.
+- When you can accurately describe the reviewed work, include commitMessage with an ordinary project commit subject/body. The extension may use it to amend its temporary checkpoint into a real commit; never mention post-review-loop, checkpointing, automation, loop ids, or extension metadata in that message.
 - Do not freehand the final report; the extension renders it.`;
 }
 
@@ -88,6 +89,7 @@ function bucketSchemaReminder(): string {
 - validation is required. For review-only/planning phases, use result "skipped" with notes explaining no code changed.
 - changedFiles lists files inspected, reviewed, or touched during this phase; it is not evidence that the loop edited those files.
 - codeChanges is the authoritative record of loop edits and should be empty unless this phase edited code.
+- commitMessage is optional but preferred once the reviewed work is clear. Write it like a normal repository commit message for the combined implementation and accepted review fixes, not like a checkpoint or review-loop log.
 - bucketI items need title, revealed, status, fix, files, bandageReason, and validation references.
 - Bucket I status meanings: "candidate" = found but not yet verified for implementation; "accepted" = verified and expected to be auto-fixed in impl; "applied" = actually fixed; "remaining" = still actionable but not fixed; "rejected"/"downgraded" = no longer Bucket I auto-fix work.
 - bucketII items need title, revealed, weakness, options, recommendedAction, tradeoffs, and status.

@@ -159,6 +159,7 @@ export class ReviewLoopRuntime {
 		const lifecycle = gate.decision === "continue" ? "checkpointing" : "complete";
 		const bucketII = mergeBucketIIItems(this.#state.bucketII, result.bucketII);
 		const reviewTargetBriefing = result.reviewTargetBriefing?.trim() || this.#state.reviewTargetBriefing;
+		const commitMessage = result.commitMessage?.subject.trim() ? { subject: result.commitMessage.subject.trim(), body: result.commitMessage.body?.trim() } : this.#state.commitMessage;
 
 		this.#state = {
 			...this.#state,
@@ -167,6 +168,7 @@ export class ReviewLoopRuntime {
 			iteration: nextIteration,
 			updatedAt: now(),
 			reviewTargetBriefing,
+			commitMessage,
 			filesChanged: unique([...this.#state.filesChanged, ...result.changedFiles, ...result.codeChanges.flatMap((item) => item.files)]),
 			validation: [...this.#state.validation, ...result.validation],
 			bucketI: [...this.#state.bucketI, ...result.bucketI],

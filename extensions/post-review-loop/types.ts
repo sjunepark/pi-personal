@@ -73,6 +73,13 @@ export type RejectedItem = {
 	reason: string;
 };
 
+export type CommitMessage = {
+	/** Ordinary commit subject to use when finalizing or amending the loop's git checkpoint. */
+	subject: string;
+	/** Optional body paragraphs or bullets. Must describe the change, not post-review-loop metadata. */
+	body?: string;
+};
+
 export type PhaseHistoryItem = {
 	phase: Phase;
 	iteration: number;
@@ -97,6 +104,7 @@ export type PhaseResult = {
 	bucketII: BucketIIItem[];
 	rejectedOrKeptAsIs: RejectedItem[];
 	codeChanges: CodeChange[];
+	commitMessage?: CommitMessage;
 	scopeBlocked?: boolean;
 	validationBlocked?: boolean;
 };
@@ -154,6 +162,7 @@ export type LoopState = {
 	rejectedOrKeptAsIs: RejectedItem[];
 	phasesRun: PhaseHistoryItem[];
 	lastGate?: GateDecision;
+	commitMessage?: CommitMessage;
 	finalReport?: string;
 	finalCleanCondition?: string;
 	finalDiffInspection?: string;

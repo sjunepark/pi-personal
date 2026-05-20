@@ -1,9 +1,8 @@
 import { execFileSync } from "node:child_process";
-import type { AfterReviewCommitState, BaselineState, LoopState, ValidationResult } from "./types.js";
+import type { AfterReviewCommitState, BaselineState, CommitMessage, LoopState, ValidationResult } from "./types.js";
 
 const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
 const BEFORE_REVIEW_SUBJECT = "checkpoint(post-review-loop): before review";
-const AFTER_REVIEW_SUBJECT = "review(post-review-loop): apply review fixes";
 
 type BaselineOptions = { checkpoint: boolean };
 
@@ -49,12 +48,42 @@ function validationLines(records: ValidationResult[]): string[] {
 	return records.map((record) => `${record.command}: ${record.result} — ${record.notes}`);
 }
 
-function verdict(state: LoopState): string {
-	return state.lastGate?.decision === "stop" ? state.lastGate.verdict : "unknown";
+function firstSentence(value: string): string {
+	return clean(value).replace(/[.!?]$/, "");
 }
 
-function commit(cwd: string, subject: string, body: string): void {
-	git(cwd, ["commit", "-m", subject, "-m", body]);
+function subjectFromTitle(title: string, prefix: "feat" | "fix"): string {
+	const cleaned = firstSentence(title);
+	if (/^[a-z]+(\([^)]+\))?!?:\s/.test(cleaned)) return cleaned;
+	const withoutDuplicatedVerb = prefix === "fix" ? cleaned.replace(/^(fix|fixes|resolve|resolves|correct|corrects|repair|repairs)\s+/i, "") : cleaned;
+	return `${prefix}: ${withoutDuplicatedVerb.charAt(0).toLowerCase()}${withoutDuplicatedVerb.slice(1)}`;
+}
+
+function fallbackCommitMessage(state: LoopState): CommitMessage {
+	const title = state.codeChanges[0]?.title ?? state.phasesRun.find((item) => item.phase === "post-review")?.summary ?? state.reviewTargetBriefing ?? "update reviewed implementation";
+	const prefix = state.codeChanges.length ? "fix" : "feat";
+	const body = [
+		state.reviewTargetBriefing ? firstSentence(state.reviewTargetBriefing) : undefined,
+		state.codeChanges.length ? ["Review fixes:", bulletList(state.codeChanges.map((item) => item.title))].join("\n") : undefined,
+		state.validation.length ? ["Validation:", bulletList(validationLines(state.validation))].join("\n") : undefined,
+	]
+		.filter((line): line is string => Boolean(line))
+		.join("\n\n");
+	return { subject: subjectFromTitle(title, prefix), body: body || undefined };
+}
+
+function finalCommitMessage(state: LoopState): CommitMessage {
+	const explicit = state.commitMessage;
+	if (explicit?.subject.trim()) return { subject: clean(explicit.subject), body: explicit.body?.trim() };
+	return fallbackCommitMessage(state);
+}
+
+function commit(cwd: string, message: CommitMessage, options: { amend?: boolean } = {}): void {
+	const args = ["commit"];
+	if (options.amend) args.push("--amend");
+	args.push("-m", message.subject);
+	if (message.body?.trim()) args.push("-m", message.body.trim());
+	git(cwd, args);
 }
 
 function assertSafeToCreateCheckpoint(cwd: string): void {
@@ -68,6 +97,15 @@ function stageAll(cwd: string): void {
 
 function hasStagedChanges(cwd: string): boolean {
 	return !gitQuiet(cwd, ["diff", "--cached", "--quiet", "--"]);
+}
+
+function isCurrentHead(cwd: string, ref: string | undefined): boolean {
+	if (!ref) return false;
+	return safeGit(cwd, ["rev-parse", "--short", "HEAD"]) === ref;
+}
+
+function afterReviewFiles(state: LoopState, statusFiles: string[]): string[] {
+	return unique([...state.baseline.scopedFiles, ...loopEditedFiles(state), ...statusFiles]);
 }
 
 function shouldReplaceDefaultScope(scope: string): boolean {
@@ -158,10 +196,9 @@ export function establishBaseline(cwd: string, scope: string, options: BaselineO
 		};
 	}
 
-	commit(
-		cwd,
-		BEFORE_REVIEW_SUBJECT,
-		[
+	commit(cwd, {
+		subject: BEFORE_REVIEW_SUBJECT,
+		body: [
 			"Created automatically by post-review-loop before review edits.",
 			`Original HEAD: ${originalRef}`,
 			`Requested scope: ${clean(scope) || "none"}`,
@@ -172,7 +209,7 @@ export function establishBaseline(cwd: string, scope: string, options: BaselineO
 		]
 			.filter((line): line is string => line !== undefined)
 			.join("\n"),
-	);
+	});
 	const checkpointRef = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
 	return {
 		ref: checkpointRef,
@@ -192,11 +229,12 @@ export function defaultAfterReviewCommit(): AfterReviewCommitState {
 
 export function normalizeAfterReviewCommit(state: LoopState): AfterReviewCommitState {
 	if (state.afterReviewCommit.mode === "created-after-review" || state.afterReviewCommit.mode === "amended-after-review" || state.afterReviewCommit.mode === "failed") return state.afterReviewCommit;
-	if (!state.codeChanges.length) return defaultAfterReviewCommit();
 	const files = loopEditedFiles(state);
+	const skippedFiles = files.length ? files : state.baseline.scopedFiles;
 	const failed = state.validation.some((item) => item.result === "failed");
-	if (failed) return { ref: "None", mode: "skipped-validation-failed", files };
-	if (state.lastGate?.decision === "stop" && state.lastGate.verdict === "Loop stopped: scope or context needed") return { ref: "None", mode: "skipped-scope-blocked", files };
+	if (failed) return { ref: "None", mode: "skipped-validation-failed", files: skippedFiles };
+	if (state.lastGate?.decision === "stop" && state.lastGate.verdict === "Loop stopped: scope or context needed") return { ref: "None", mode: "skipped-scope-blocked", files: skippedFiles };
+	if (!state.codeChanges.length) return defaultAfterReviewCommit();
 	return { ref: "None", mode: "left-uncommitted", files };
 }
 
@@ -213,35 +251,33 @@ export function failedAfterReviewCommit(cwd: string, state: LoopState, error: un
 
 export function createAfterReviewCommit(cwd: string, state: LoopState): AfterReviewCommitState {
 	const normalized = normalizeAfterReviewCommit(state);
-	if (normalized.mode !== "left-uncommitted") return normalized;
-
 	const inside = safeGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
 	if (inside !== "true") return normalized;
 
-	assertSafeToCreateCheckpoint(cwd);
-	const files = scopedFilesFromStatus(cwd);
-	if (!files.length) return { ref: "None", mode: "not-needed", files: [] };
+	const canAmendBaseline = state.baseline.createdCommit && isCurrentHead(cwd, state.baseline.checkpointRef);
+	if (normalized.mode !== "left-uncommitted" && !(normalized.mode === "not-needed" && canAmendBaseline)) return normalized;
 
+	assertSafeToCreateCheckpoint(cwd);
+	const filesBeforeStage = scopedFilesFromStatus(cwd);
+	const files = afterReviewFiles(state, filesBeforeStage);
+	const message = finalCommitMessage(state);
+
+	if (canAmendBaseline) {
+		if (normalized.mode === "left-uncommitted") stageAll(cwd);
+		commit(cwd, message, { amend: true });
+		const ref = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
+		return {
+			ref,
+			mode: "amended-after-review",
+			files,
+			notes: `Amended temporary before-review checkpoint ${state.baseline.checkpointRef ?? "unknown"} into a normal project commit.`,
+		};
+	}
+
+	if (!filesBeforeStage.length) return { ref: "None", mode: "not-needed", files: [] };
 	stageAll(cwd);
 	if (!hasStagedChanges(cwd)) return { ref: "None", mode: "not-needed", files };
-
-	commit(
-		cwd,
-		AFTER_REVIEW_SUBJECT,
-		[
-			"Created automatically by post-review-loop after review completion.",
-			`Loop id: ${state.id}`,
-			`Scope: ${clean(state.scope)}`,
-			`Verdict: ${verdict(state)}`,
-			`Stop reason: ${state.lastGate?.reason ?? "unknown"}`,
-			"",
-			"Applied review changes:",
-			bulletList(state.codeChanges.map((item) => item.title)),
-			"",
-			"Validation:",
-			bulletList(validationLines(state.validation)),
-		].join("\n"),
-	);
+	commit(cwd, message);
 	const ref = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
-	return { ref, mode: "created-after-review", files };
+	return { ref, mode: "created-after-review", files, notes: "Created a normal project commit for applied review-loop changes." };
 }

@@ -84,6 +84,19 @@ const CodeChangeSchema = Type.Object({
 	inspect: Type.String({ minLength: 1 }),
 });
 
+const CommitMessageSchema = Type.Object({
+	subject: Type.String({
+		minLength: 1,
+		description: "Ordinary project commit subject for the finalized reviewed work. Do not mention post-review-loop, checkpointing, or automation.",
+	}),
+	body: Type.Optional(
+		Type.String({
+			minLength: 1,
+			description: "Optional concise commit body describing the user-facing/code change and validation. Do not include loop ids or extension metadata.",
+		}),
+	),
+});
+
 const SubmitPhaseResultSchema = Type.Object({
 	phase: PhaseSchema,
 	iteration: Type.Integer({ minimum: 1 }),
@@ -104,6 +117,7 @@ const SubmitPhaseResultSchema = Type.Object({
 	bucketII: Type.Array(BucketIISchema),
 	rejectedOrKeptAsIs: Type.Array(RejectedSchema),
 	codeChanges: Type.Array(CodeChangeSchema, { description: "Authoritative list of code edits applied by the loop; keep empty for review-only phases." }),
+	commitMessage: Type.Optional(CommitMessageSchema),
 	scopeBlocked: Type.Optional(Type.Boolean()),
 	validationBlocked: Type.Optional(Type.Boolean()),
 });
@@ -455,6 +469,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 			"The extension, not the model, decides whether to continue or stop.",
 			"Treat accepted Bucket I as auto-fix-track work: impl phases should apply it unless a concrete blocker exists; candidates are not fixed during review-only phases.",
 			"Only submit new or materially changed Bucket II items; reuse the existing title verbatim for updates and omit unchanged existing Bucket II items.",
+			"Include commitMessage when the reviewed work is clear; write a normal project commit message, not checkpoint or post-review-loop metadata.",
 			"After a continue result, stop substantial work until the next phase prompt arrives.",
 		],
 		parameters: SubmitPhaseResultSchema,
