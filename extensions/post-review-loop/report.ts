@@ -16,6 +16,7 @@ const AFTER_REVIEW_MODE_LABELS: Record<string, string> = {
 	"skipped-validation-failed": "Skipped because validation failed",
 	"skipped-scope-blocked": "Skipped because scope or context blocked",
 	"left-uncommitted": "Loop changes left uncommitted",
+	failed: "After-review commit failed; loop changes left uncommitted",
 };
 
 function line(value: string): string {
@@ -46,6 +47,22 @@ function loopEditedFiles(state: LoopState): string[] {
 
 function renderFileScopeLines(state: LoopState): string[] {
 	return [`- Files reviewed / in submitted phase scope: ${list(state.filesChanged)}`, `- Files edited by loop: ${list(loopEditedFiles(state))}`];
+}
+
+function renderBaselineLines(state: LoopState, baselineKind: string): string[] {
+	return [
+		`- Before-review baseline: \`${state.baseline.ref}\` (${baselineKind})`,
+		state.baseline.originalRef ? `- Original HEAD before loop: \`${state.baseline.originalRef}\`` : undefined,
+		state.baseline.checkpointRef ? `- Start checkpoint commit: \`${state.baseline.checkpointRef}\`` : undefined,
+		`- Baseline notes: ${line(state.baseline.notes)}`,
+	].filter((item): item is string => Boolean(item));
+}
+
+function renderAfterReviewLines(state: LoopState, afterReviewKind: string): string[] {
+	return [
+		`- After-review commit: \`${state.afterReviewCommit.ref}\` (${afterReviewKind})`,
+		state.afterReviewCommit.notes ? `- After-review notes: ${line(state.afterReviewCommit.notes)}` : undefined,
+	].filter((item): item is string => Boolean(item));
 }
 
 function escapeTable(value: string): string {
@@ -140,8 +157,8 @@ export function renderCurrentReport(state: LoopState): string {
 		`- Current phase: ${state.phase}`,
 		`- Iterations: ${state.iteration}/${state.limit}`,
 		`- Scope: ${line(state.scope)}`,
-		`- Before-review baseline: \`${state.baseline.ref}\` (${baselineKind})`,
-		`- After-review commit: \`${state.afterReviewCommit.ref}\` (${afterReviewKind})`,
+		...renderBaselineLines(state, baselineKind),
+		...renderAfterReviewLines(state, afterReviewKind),
 		...renderFileScopeLines(state),
 		`- Bucket I current findings: ${currentBucketI.length} (${state.bucketI.length} ledger entries)`,
 		`- Bucket II unresolved/current findings: ${unresolvedBucketII}/${currentBucketII.length} (${state.bucketII.length} stored entries)`,
@@ -182,8 +199,9 @@ export function renderCurrentReport(state: LoopState): string {
 export function renderFinalReport(state: LoopState): string {
 	const baselineKind = BASELINE_MODE_LABELS[state.baseline.mode] ?? state.baseline.mode;
 	const afterReviewKind = AFTER_REVIEW_MODE_LABELS[state.afterReviewCommit.mode] ?? state.afterReviewCommit.mode;
-	const hasStopGate = state.lastGate?.decision === "stop";
-	const verdict = hasStopGate ? state.lastGate!.verdict : "Loop stopped: scope or context needed";
+	const stopGate = state.lastGate?.decision === "stop" ? state.lastGate : undefined;
+	const hasStopGate = Boolean(stopGate);
+	const verdict = stopGate?.verdict ?? "Loop stopped: scope or context needed";
 	const stopReason = state.lastGate?.reason ?? "report requested before a final stop gate";
 	const finalCleanCondition = state.finalCleanCondition ?? (hasStopGate && verdict.startsWith("Loop clean") ? "No accepted/actionable Bucket I findings remain." : "Loop stopped before clean condition was proven.");
 	const finalDiffInspection = state.finalDiffInspection ?? "Inspect the reviewed/edited file lists and validation table above.";
@@ -194,9 +212,9 @@ export function renderFinalReport(state: LoopState): string {
 		"",
 		"## Summary",
 		"",
-		`- Before-review baseline: \`${state.baseline.ref}\` (${baselineKind})`,
+		...renderBaselineLines(state, baselineKind),
 		`- Before-review scoped files: ${list(state.baseline.scopedFiles)}`,
-		`- After-review commit: \`${state.afterReviewCommit.ref}\` (${afterReviewKind})`,
+		...renderAfterReviewLines(state, afterReviewKind),
 		`- After-review files: ${list(state.afterReviewCommit.files)}`,
 		`- Scope: ${line(state.scope)}`,
 		`- Iterations: ${state.iteration}/${state.limit}`,

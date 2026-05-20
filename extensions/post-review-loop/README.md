@@ -5,7 +5,7 @@ Pi extension that owns the post-implementation review loop workflow.
 ## Commands
 
 ```text
-/post-review-loop start [--limit N] [--review-only] [scope]
+/post-review-loop start [--limit N] [--review-only] [--no-git-checkpoint] [scope]
 /post-review-loop status
 /post-review-loop pause
 /post-review-loop resume
@@ -25,8 +25,10 @@ The model supplies phase findings, validation, submitted phase-scope files, and 
 ## Current v1 policies
 
 - `/post-review-loop start` without a scope defaults to reviewing uncommitted changes. Provide a scope argument to review a different diff, branch, commit range, or implementation target.
-- Git integration is record-only. The extension records the starting `HEAD`, dirty files, and after-review state, but it does not stage, create, amend, or push commits.
-- Loop-owned commit automation is deferred until an explicit policy is designed for staging scope, loop-owned markers, amend behavior, and dirty-worktree refusal cases.
+- Git integration is deterministic and local-only. On start, the extension records the starting `HEAD`; if the worktree is dirty, it runs `git add -A` and creates `checkpoint(post-review-loop): before review` by default. Use `--no-git-checkpoint` to record only.
+- When the default `uncommitted changes` scope is checkpointed, the review scope becomes `ORIGINAL_HEAD..CHECKPOINT_HEAD` so the loop reviews the committed implementation boundary.
+- On final completion, if the loop applied code changes and validation/scope gates are not blocking, the extension runs `git add -A` and creates `review(post-review-loop): apply review fixes` with a deterministic body containing the loop id, scope, verdict, applied changes, and validation summary.
+- The extension does not push commits. It refuses automatic commits during active merge/rebase states and skips the after-review commit when validation failed or scope/context blocked safe completion.
 - Bucket I history is append-only. Active/current views coalesce findings by normalized title because v1 has no stable finding id; treat that as a display approximation, not a durable identity model.
 - Bucket II decision items are coalesced by normalized title. Later materially changed submissions replace the current view; unchanged existing items should be omitted from new phase submissions.
 - Bucket II gates count only unresolved decision statuses. Items marked `implemented after explicit approval` remain in reports but do not block a clean stop.

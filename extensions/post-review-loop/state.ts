@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { decideNext } from "./gate.js";
 import { countCurrentUnresolvedBucketII, mergeBucketIIItems } from "./ledger.js";
 import { defaultAfterReviewCommit, normalizeAfterReviewCommit } from "./git.js";
-import type { BaselineState, GateDecision, GateSnapshot, LoopEntry, LoopState, Phase, PhaseResult } from "./types.js";
+import type { AfterReviewCommitState, BaselineState, GateDecision, GateSnapshot, LoopEntry, LoopState, Phase, PhaseResult } from "./types.js";
 import { DEFAULT_LIMIT, ENTRY_TYPE, MAX_SCOPE_CHARS } from "./types.js";
 
 function now(): number {
@@ -193,6 +193,12 @@ export class ReviewLoopRuntime {
 	markCheckpointFailed(error: string): LoopState {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
 		this.#state = { ...this.#state, lifecycle: "paused", lastError: error, updatedAt: now() };
+		return this.state!;
+	}
+
+	recordAfterReviewCommit(afterReviewCommit: AfterReviewCommitState, lastError?: string): LoopState {
+		if (!this.#state) throw new Error("No post-review-loop is active.");
+		this.#state = { ...this.#state, afterReviewCommit, lastError: lastError ?? this.#state.lastError, updatedAt: now() };
 		return this.state!;
 	}
 

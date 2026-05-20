@@ -18,12 +18,16 @@ export type BaselineState = {
 	createdCommit: boolean;
 	scopedFiles: string[];
 	notes: string;
+	originalRef?: string;
+	checkpointRef?: string;
+	reviewScope?: string;
 };
 
 export type AfterReviewCommitState = {
 	ref: string;
-	mode: "not-needed" | "created-after-review" | "amended-after-review" | "skipped-validation-failed" | "skipped-scope-blocked" | "left-uncommitted";
+	mode: "not-needed" | "created-after-review" | "amended-after-review" | "skipped-validation-failed" | "skipped-scope-blocked" | "left-uncommitted" | "failed";
 	files: string[];
+	notes?: string;
 };
 
 export type ValidationResult = {

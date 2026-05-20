@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ReviewLoopCompactor } from "./compact.js";
-import { establishBaseline } from "./git.js";
+import { createAfterReviewCommit, establishBaseline, failedAfterReviewCommit } from "./git.js";
 import { countCurrentActionableBucketI, countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import { phasePrompt, renderLedgerSummary, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport, renderReviewSummary } from "./report.js";
@@ -261,15 +261,24 @@ function persist(pi: ExtensionAPI, ctx: ExtensionContext, event: string): void {
 	updateStatus(ctx);
 }
 
-function parseStartArgs(args: string): { scope: string; limit?: number; reviewOnly: boolean } {
+function parseStartArgs(args: string): { scope: string; limit?: number; reviewOnly: boolean; gitCheckpoint: boolean } {
 	const tokens = args.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((token) => token.replace(/^"|"$/g, "")) ?? [];
 	let limit: number | undefined;
 	let reviewOnly = false;
+	let gitCheckpoint = true;
 	const scopeParts: string[] = [];
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
 		if (token === "--review-only") {
 			reviewOnly = true;
+			continue;
+		}
+		if (token === "--no-git-checkpoint") {
+			gitCheckpoint = false;
+			continue;
+		}
+		if (token === "--git-checkpoint") {
+			gitCheckpoint = true;
 			continue;
 		}
 		if (token === "--limit") {
@@ -285,7 +294,7 @@ function parseStartArgs(args: string): { scope: string; limit?: number; reviewOn
 		}
 		scopeParts.push(token);
 	}
-	return { scope: scopeParts.join(" ").trim(), limit, reviewOnly };
+	return { scope: scopeParts.join(" ").trim(), limit, reviewOnly, gitCheckpoint };
 }
 
 function renderReportOnly(): string {
@@ -303,7 +312,14 @@ function registerMarkdownRenderer(pi: ExtensionAPI): void {
 }
 
 function completeWithReport(pi: ExtensionAPI, ctx: ExtensionContext, event: string): string {
-	const state = runtime.state;
+	let state = runtime.state;
+	if (!state) throw new Error("No post-review-loop state.");
+	try {
+		runtime.recordAfterReviewCommit(createAfterReviewCommit(ctx.cwd, state));
+	} catch (error) {
+		runtime.recordAfterReviewCommit(failedAfterReviewCommit(ctx.cwd, state, error), error instanceof Error ? error.message : String(error));
+	}
+	state = runtime.state;
 	if (!state) throw new Error("No post-review-loop state.");
 	const report = renderFinalReport(state);
 	runtime.completeWithReport(report);
@@ -311,9 +327,9 @@ function completeWithReport(pi: ExtensionAPI, ctx: ExtensionContext, event: stri
 	return report;
 }
 
-function startLoop(pi: ExtensionAPI, ctx: ExtensionContext, scope: string, options: { limit?: number; reviewOnly: boolean }): LoopState {
-	const baseline = establishBaseline(ctx.cwd, scope);
-	const state = runtime.start(scope, baseline, options);
+function startLoop(pi: ExtensionAPI, ctx: ExtensionContext, scope: string, options: { limit?: number; reviewOnly: boolean; gitCheckpoint: boolean }): LoopState {
+	const baseline = establishBaseline(ctx.cwd, scope, { checkpoint: options.gitCheckpoint });
+	const state = runtime.start(baseline.reviewScope ?? scope, baseline, options);
 	persist(pi, ctx, "started");
 	return state;
 }
@@ -327,7 +343,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 	pi.registerCommand(name, {
 		description: "Run the deterministic post-review-loop workflow",
 		getArgumentCompletions(prefix) {
-			const options = ["start", "start --limit 3", "start --review-only", "status", "pause", "resume", "stop", "report", "clear"];
+			const options = ["start", "start --limit 3", "start --review-only", "start --no-git-checkpoint", "status", "pause", "resume", "stop", "report", "clear"];
 			const filtered = options.filter((value) => value.startsWith(prefix));
 			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
 		},
@@ -397,7 +413,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				}
 				const parsed = parseStartArgs(restText);
 				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
-				const state = startLoop(pi, ctx, scope, { limit: parsed.limit, reviewOnly: parsed.reviewOnly });
+				const state = startLoop(pi, ctx, scope, { limit: parsed.limit, reviewOnly: parsed.reviewOnly, gitCheckpoint: parsed.gitCheckpoint });
 				notify(ctx, `Post-review-loop started: ${compactText(state.scope)}`, "info");
 				sendPhasePrompt(pi, state);
 				return;
