@@ -89,6 +89,18 @@ Compact ledger:
 ${renderLedgerSummary(state)}`;
 }
 
+function needsBaselineCommitMessageAmend(state: LoopState): boolean {
+	return state.baseline.createdCommit && state.baseline.mode === "created-before-review" && state.phasesRun.length === 0;
+}
+
+function baselineCommitMessageAmendInstruction(state: LoopState): string {
+	if (!needsBaselineCommitMessageAmend(state)) return "";
+	return `First, before doing any review work, fix the temporary git checkpoint commit message.
+- Inspect the committed changes enough to write a normal project commit message.
+- Run git commit --amend so HEAD no longer uses \`checkpoint(post-review-loop): before review\` or mentions checkpointing/post-review-loop automation.
+- Use an ordinary subject/body that describes the actual project change, then continue with the phase task.`;
+}
+
 function coreRules(state: LoopState): string {
 	const firstPhase = state.phasesRun.length === 0;
 	const firstPhaseOnly = firstPhase
@@ -118,8 +130,10 @@ function schemaReminder(): string {
 
 export function phasePrompt(state: LoopState, phase: Phase = state.phase as Phase): string {
 	const header = commonHeader(state, phase);
+	const amendInstruction = baselineCommitMessageAmendInstruction(state);
+	const firstAction = amendInstruction ? `\n\n${amendInstruction}` : "";
 	if (phase === "post-review") {
-		return `${header}
+		return `${header}${firstAction}
 
 Task: review the current diff and nearby architecture. Do not edit code. Record Bucket I candidates only when likely safe for later automatic implementation; record larger decisions in Bucket II.
 
@@ -129,7 +143,7 @@ ${schemaReminder()}`;
 	}
 
 	if (phase === "impl-review") {
-		return `${header}
+		return `${header}${firstAction}
 
 Task: re-verify each actionable Bucket I item against actual code paths and tests. Do not edit code. Mark safe, in-scope, root-cause-fixable items as accepted/remaining; reject, downgrade, or move uncertain items to Bucket II.
 
@@ -138,7 +152,7 @@ ${coreRules(state)}
 ${schemaReminder()}`;
 	}
 
-	return `${header}
+	return `${header}${firstAction}
 
 Task: implement all accepted Bucket I fixes unless a concrete blocker appears. Keep changes tight, integrated, and validated with existing focused commands. Mark fixed items applied and record codeChanges. Do not implement Bucket II without explicit approval.
 

@@ -3,6 +3,7 @@ import type { AfterReviewCommitState, BaselineState, CommitMessage, LoopState, V
 
 const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
 const BEFORE_REVIEW_SUBJECT = "checkpoint(post-review-loop): before review";
+const NON_PROJECT_COMMIT_MESSAGE_PATTERN = /\bcheckpoint(?:ing)?\b|post-review-loop|post review loop/i;
 
 type BaselineOptions = { checkpoint: boolean };
 
@@ -72,10 +73,26 @@ function fallbackCommitMessage(state: LoopState): CommitMessage {
 	return { subject: subjectFromTitle(title, prefix), body: body || undefined };
 }
 
+function mentionsReviewLoopMetadata(value: string | undefined): boolean {
+	return value ? NON_PROJECT_COMMIT_MESSAGE_PATTERN.test(value) : false;
+}
+
+function ordinaryProjectCommitMessage(message: CommitMessage): CommitMessage | undefined {
+	const subject = clean(message.subject);
+	const body = message.body?.trim();
+	if (!subject) return undefined;
+	if (mentionsReviewLoopMetadata(subject) || mentionsReviewLoopMetadata(body)) return undefined;
+	return { subject, body };
+}
+
 function finalCommitMessage(state: LoopState): CommitMessage {
 	const explicit = state.commitMessage;
-	if (explicit?.subject.trim()) return { subject: clean(explicit.subject), body: explicit.body?.trim() };
-	return fallbackCommitMessage(state);
+	if (explicit?.subject.trim()) {
+		const ordinary = ordinaryProjectCommitMessage(explicit);
+		if (ordinary) return ordinary;
+	}
+	const fallback = fallbackCommitMessage(state);
+	return ordinaryProjectCommitMessage(fallback) ?? { subject: "feat: update reviewed implementation" };
 }
 
 function commit(cwd: string, message: CommitMessage, options: { amend?: boolean } = {}): void {
