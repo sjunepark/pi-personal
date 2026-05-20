@@ -1,4 +1,4 @@
-import { countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems, isActionableBucketI } from "./ledger.js";
+import { countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems, isActionableBucketI, isUnresolvedBucketII } from "./ledger.js";
 import type { BucketIItem, BucketIIItem, CodeChange, LoopState, RejectedItem, ValidationResult } from "./types.js";
 
 const BASELINE_MODE_LABELS: Record<string, string> = {
@@ -32,21 +32,29 @@ function paragraphs(value: string): string {
 		.join("\n\n");
 }
 
-function list(values: string[], empty = "None"): string {
+function list(values: string[], empty = "None", limit?: number): string {
 	const cleaned = values.map(line).filter(Boolean);
-	return cleaned.length ? cleaned.join(", ") : empty;
+	if (!cleaned.length) return empty;
+	const shown = limit ? cleaned.slice(0, limit) : cleaned;
+	const suffix = limit && cleaned.length > limit ? `, +${cleaned.length - limit} more` : "";
+	return `${shown.join(", ")}${suffix}`;
 }
 
 function unique(values: string[]): string[] {
 	return Array.from(new Set(values.map(line).filter(Boolean)));
 }
 
+function normalizedKey(value: string): string {
+	return line(value).toLowerCase();
+}
+
 function loopEditedFiles(state: LoopState): string[] {
 	return unique(state.codeChanges.flatMap((item) => item.files));
 }
 
-function renderFileScopeLines(state: LoopState): string[] {
-	return [`- Files reviewed / in submitted phase scope: ${list(state.filesChanged)}`, `- Files edited by loop: ${list(loopEditedFiles(state))}`];
+function renderFileScopeLines(state: LoopState, options: { compact?: boolean } = { compact: true }): string[] {
+	const limit = options.compact === false ? undefined : 8;
+	return [`- Files reviewed / in submitted phase scope: ${list(state.filesChanged, "None", limit)}`, `- Files edited by loop: ${list(loopEditedFiles(state), "None", limit)}`];
 }
 
 function renderBaselineLines(state: LoopState, baselineKind: string): string[] {
@@ -69,12 +77,38 @@ function escapeTable(value: string): string {
 	return line(value).replace(/\|/g, "\\|");
 }
 
-function renderValidation(records: ValidationResult[]): string {
+function validationKey(record: ValidationResult): string {
+	return `${record.command}\u0000${record.result}`;
+}
+
+function groupedValidation(records: ValidationResult[]): Array<ValidationResult & { count: number; phases: string[] }> {
+	const byKey = new Map<string, ValidationResult & { count: number; phases: string[] }>();
+	for (const record of records) {
+		const key = validationKey(record);
+		const previous = byKey.get(key);
+		if (previous) {
+			previous.count += 1;
+			previous.notes = record.notes;
+			previous.phase = record.phase;
+			previous.phases = unique([...previous.phases, record.phase]);
+			continue;
+		}
+		byKey.set(key, { ...record, count: 1, phases: [record.phase] });
+	}
+	return Array.from(byKey.values());
+}
+
+function renderValidationSummary(records: ValidationResult[]): string {
+	if (!records.length) return "No validation commands were recorded.";
+	const rows = ["| Command | Result | Count | Latest note |", "| --- | --- | ---: | --- |"];
+	for (const record of groupedValidation(records)) rows.push(`| ${escapeTable(record.command)} | ${record.result} | ${record.count} | ${escapeTable(record.notes)} |`);
+	return rows.join("\n");
+}
+
+function renderValidationFull(records: ValidationResult[]): string {
 	if (!records.length) return "No validation commands were recorded.";
 	const rows = ["| Command | Result | Phase | Notes |", "| --- | --- | --- | --- |"];
-	for (const record of records) {
-		rows.push(`| ${escapeTable(record.command)} | ${record.result} | ${record.phase} | ${escapeTable(record.notes)} |`);
-	}
+	for (const record of records) rows.push(`| ${escapeTable(record.command)} | ${record.result} | ${record.phase} | ${escapeTable(record.notes)} |`);
 	return rows.join("\n");
 }
 
@@ -91,6 +125,11 @@ function renderBucketI(records: BucketIItem[], empty = "No Bucket I findings wer
    - Validation evidence: ${list(item.validation)}`,
 		)
 		.join("\n\n");
+}
+
+function renderBucketICompact(records: BucketIItem[], empty = "No Bucket I findings were found."): string {
+	if (!records.length) return empty;
+	return records.map((item) => `- [${item.status}] ${line(item.title)} (${list(item.files, "no files", 5)})`).join("\n");
 }
 
 function bucketIOutcomeGroups(records: BucketIItem[]): { applied: BucketIItem[]; actionable: BucketIItem[]; closedWithoutFix: BucketIItem[] } {
@@ -114,7 +153,7 @@ function cleanCondition(state: LoopState, records: BucketIItem[], verdict: strin
 	return "Loop stopped before clean condition was proven.";
 }
 
-function renderBucketIOutcomeSections(records: BucketIItem[]): string {
+function renderBucketIOutcomeSectionsFull(records: BucketIItem[]): string {
 	if (!records.length) return "No Bucket I findings were found.";
 	const { applied, actionable, closedWithoutFix } = bucketIOutcomeGroups(records);
 	return [
@@ -135,6 +174,22 @@ function renderBucketIOutcomeSections(records: BucketIItem[]): string {
 	].join("\n");
 }
 
+function renderBucketIOutcomeSectionsCompact(records: BucketIItem[]): string {
+	if (!records.length) return "No Bucket I findings were found.";
+	const { applied, actionable, closedWithoutFix } = bucketIOutcomeGroups(records);
+	return [
+		"### Applied fixes",
+		renderBucketICompact(applied, "No Bucket I fixes were applied by the loop."),
+		"",
+		"### Still actionable",
+		renderBucketICompact(actionable, "No unapplied actionable Bucket I items remain."),
+		"",
+		closedWithoutFix.length ? `### Rejected or downgraded\n${renderBucketICompact(closedWithoutFix)}` : undefined,
+	]
+		.filter((part): part is string => Boolean(part))
+		.join("\n");
+}
+
 function renderBucketII(records: BucketIIItem[]): string {
 	if (!records.length) return "No Bucket II findings were found.";
 	return records
@@ -148,6 +203,16 @@ function renderBucketII(records: BucketIIItem[]): string {
    - Status: ${item.status}`,
 		)
 		.join("\n\n");
+}
+
+function renderBucketIICompact(records: BucketIIItem[]): string {
+	if (!records.length) return "No Bucket II findings were found.";
+	return records
+		.map((item) => {
+			const recommendation = isUnresolvedBucketII(item) ? ` — ${line(item.recommendedAction)}` : "";
+			return `- [${item.status}] ${line(item.title)}${recommendation}`;
+		})
+		.join("\n");
 }
 
 function renderCodeChanges(records: CodeChange[]): string {
@@ -164,16 +229,26 @@ function renderCodeChanges(records: CodeChange[]): string {
 		.join("\n\n");
 }
 
+function renderCodeChangesCompact(records: CodeChange[]): string {
+	if (!records.length) return "No code changes were applied by the loop.";
+	return records.map((item) => `- ${line(item.title)} (${list(item.files, "no files", 5)})`).join("\n");
+}
+
+function dedupeRejected(records: RejectedItem[]): RejectedItem[] {
+	const byTitle = new Map<string, RejectedItem>();
+	for (const item of records) byTitle.set(normalizedKey(item.title), item);
+	return Array.from(byTitle.values());
+}
+
 function renderRejected(records: RejectedItem[]): string {
-	if (!records.length) return "None.";
-	return records.map((item) => `- ${line(item.title)}: ${line(item.reason)}`).join("\n");
+	const uniqueRecords = dedupeRejected(records);
+	if (!uniqueRecords.length) return "None.";
+	return uniqueRecords.map((item) => `- ${line(item.title)}: ${line(item.reason)}`).join("\n");
 }
 
 function renderPhases(state: LoopState): string {
 	if (!state.phasesRun.length) return "None recorded.";
-	return state.phasesRun
-		.map((item) => `- Iteration ${item.iteration} \`${item.phase}\` — ${line(item.gateDecision)}`)
-		.join("\n");
+	return state.phasesRun.map((item) => `- Iteration ${item.iteration} \`${item.phase}\` — ${line(item.gateDecision)}`).join("\n");
 }
 
 export function renderReviewSummary(state: LoopState): string {
@@ -182,7 +257,49 @@ export function renderReviewSummary(state: LoopState): string {
 	return `**Review target: ${target}**\n\n${paragraphs(briefing)}`;
 }
 
-export function renderCurrentReport(state: LoopState): string {
+export function renderCurrentReport(state: LoopState, options: { full?: boolean } = {}): string {
+	return options.full ? renderCurrentReportFull(state) : renderCurrentReportConcise(state);
+}
+
+function renderCurrentReportConcise(state: LoopState): string {
+	const currentBucketI = currentBucketIItems(state.bucketI);
+	const currentBucketII = currentBucketIIItems(state.bucketII);
+	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
+	return [
+		"# Post-Review Loop Current Status",
+		"",
+		`- Lifecycle: ${state.lifecycle}`,
+		`- Current phase: ${state.phase}`,
+		`- Iterations: ${state.iteration}/${state.limit}`,
+		`- Scope: ${line(state.scope)}`,
+		`- Bucket I: ${bucketIOutcomeSummary(currentBucketI)}`,
+		`- Bucket II: ${unresolvedBucketII}/${currentBucketII.length} unresolved/current`,
+		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none"}`,
+		"",
+		"## What Was Reviewed",
+		"",
+		renderReviewSummary(state),
+		"",
+		"## Bucket I",
+		"",
+		renderBucketIOutcomeSectionsCompact(currentBucketI),
+		"",
+		"## Remaining Decisions",
+		"",
+		renderBucketIICompact(currentBucketII),
+		"",
+		"## Validation Summary",
+		"",
+		renderValidationSummary(state.validation),
+		"",
+		"## Files",
+		"",
+		...renderFileScopeLines(state),
+		"",
+	].join("\n");
+}
+
+function renderCurrentReportFull(state: LoopState): string {
 	const baselineKind = BASELINE_MODE_LABELS[state.baseline.mode] ?? state.baseline.mode;
 	const afterReviewKind = AFTER_REVIEW_MODE_LABELS[state.afterReviewCommit.mode] ?? state.afterReviewCommit.mode;
 	const currentBucketI = currentBucketIItems(state.bucketI);
@@ -201,7 +318,7 @@ export function renderCurrentReport(state: LoopState): string {
 		`- Scope: ${line(state.scope)}`,
 		...renderBaselineLines(state, baselineKind),
 		...renderAfterReviewLines(state, afterReviewKind),
-		...renderFileScopeLines(state),
+		...renderFileScopeLines(state, { compact: false }),
 		`- Bucket I current findings: ${currentBucketI.length} (${state.bucketI.length} ledger entries; ${bucketIOutcomeSummary(currentBucketI)})`,
 		`- Bucket II unresolved/current findings: ${unresolvedBucketII}/${currentBucketII.length} (${state.bucketII.length} stored entries)`,
 		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none"}`,
@@ -217,11 +334,11 @@ export function renderCurrentReport(state: LoopState): string {
 		"",
 		"## Validation",
 		"",
-		renderValidation(state.validation),
+		renderValidationFull(state.validation),
 		"",
 		"## Bucket I — Current Findings by Outcome",
 		"",
-		renderBucketIOutcomeSections(currentBucketI),
+		renderBucketIOutcomeSectionsFull(currentBucketI),
 		"",
 		"## Bucket II — Findings and Recommendations",
 		"",
@@ -238,17 +355,72 @@ export function renderCurrentReport(state: LoopState): string {
 	].join("\n");
 }
 
-export function renderFinalReport(state: LoopState): string {
-	const baselineKind = BASELINE_MODE_LABELS[state.baseline.mode] ?? state.baseline.mode;
-	const afterReviewKind = AFTER_REVIEW_MODE_LABELS[state.afterReviewCommit.mode] ?? state.afterReviewCommit.mode;
+export function renderFinalReport(state: LoopState, options: { full?: boolean } = {}): string {
+	return options.full ? renderFinalReportFull(state) : renderFinalReportConcise(state);
+}
+
+function finalFacts(state: LoopState): { verdict: string; stopReason: string; finalCleanCondition: string; currentBucketI: BucketIItem[]; currentBucketII: BucketIIItem[] } {
 	const stopGate = state.lastGate?.decision === "stop" ? state.lastGate : undefined;
 	const hasStopGate = Boolean(stopGate);
 	const verdict = stopGate?.verdict ?? "Loop stopped: scope or context needed";
 	const stopReason = state.lastGate?.reason ?? "report requested before a final stop gate";
-	const finalDiffInspection = state.finalDiffInspection ?? "Inspect the reviewed/edited file lists and validation table above.";
 	const currentBucketI = currentBucketIItems(state.bucketI);
-	const finalCleanCondition = cleanCondition(state, currentBucketI, verdict, hasStopGate);
-	const currentBucketII = currentBucketIIItems(state.bucketII);
+	return {
+		verdict,
+		stopReason,
+		finalCleanCondition: cleanCondition(state, currentBucketI, verdict, hasStopGate),
+		currentBucketI,
+		currentBucketII: currentBucketIIItems(state.bucketII),
+	};
+}
+
+function renderFinalReportConcise(state: LoopState): string {
+	const { verdict, stopReason, finalCleanCondition, currentBucketI, currentBucketII } = finalFacts(state);
+	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
+	return [
+		"# Post-Review Loop Report",
+		"",
+		"## Summary",
+		"",
+		`- Verdict: ${verdict}`,
+		`- Stop reason: ${line(stopReason)}`,
+		`- Clean condition: ${line(finalCleanCondition)}`,
+		`- Iterations: ${state.iteration}/${state.limit}`,
+		`- Bucket I: ${bucketIOutcomeSummary(currentBucketI)}`,
+		`- Bucket II: ${unresolvedBucketII}/${currentBucketII.length} unresolved/current`,
+		"",
+		"## What Was Reviewed",
+		"",
+		renderReviewSummary(state),
+		"",
+		"## Bucket I Outcomes",
+		"",
+		renderBucketIOutcomeSectionsCompact(currentBucketI),
+		"",
+		"## Remaining Decisions",
+		"",
+		renderBucketIICompact(currentBucketII),
+		"",
+		"## Validation Summary",
+		"",
+		renderValidationSummary(state.validation),
+		"",
+		"## Files Changed Summary",
+		"",
+		...renderFileScopeLines(state),
+		"",
+		"## Code Changes Applied",
+		"",
+		renderCodeChangesCompact(state.codeChanges),
+		"",
+	].join("\n");
+}
+
+function renderFinalReportFull(state: LoopState): string {
+	const baselineKind = BASELINE_MODE_LABELS[state.baseline.mode] ?? state.baseline.mode;
+	const afterReviewKind = AFTER_REVIEW_MODE_LABELS[state.afterReviewCommit.mode] ?? state.afterReviewCommit.mode;
+	const { verdict, stopReason, finalCleanCondition, currentBucketI, currentBucketII } = finalFacts(state);
+	const finalDiffInspection = state.finalDiffInspection ?? "Inspect the reviewed/edited file lists and validation table above.";
 
 	return [
 		"# Post-Implementation Review Loop Report",
@@ -261,7 +433,7 @@ export function renderFinalReport(state: LoopState): string {
 		`- After-review files: ${list(state.afterReviewCommit.files)}`,
 		`- Scope: ${line(state.scope)}`,
 		`- Iterations: ${state.iteration}/${state.limit}`,
-		...renderFileScopeLines(state),
+		...renderFileScopeLines(state, { compact: false }),
 		`- Bucket I outcome: ${bucketIOutcomeSummary(currentBucketI)}`,
 		`- Stop reason: ${line(stopReason)}`,
 		`- Final clean condition: ${line(finalCleanCondition)}`,
@@ -278,11 +450,11 @@ export function renderFinalReport(state: LoopState): string {
 		"",
 		"## Validation",
 		"",
-		renderValidation(state.validation),
+		renderValidationFull(state.validation),
 		"",
 		"## Bucket I — Findings by Outcome",
 		"",
-		renderBucketIOutcomeSections(currentBucketI),
+		renderBucketIOutcomeSectionsFull(currentBucketI),
 		"",
 		"## Bucket II — Findings and Recommendations",
 		"",

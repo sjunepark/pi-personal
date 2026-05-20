@@ -163,6 +163,7 @@ export type LoopState = {
 	phasesRun: PhaseHistoryItem[];
 	lastGate?: GateDecision;
 	commitMessage?: CommitMessage;
+	/** Deprecated for new entries: final reports are rendered from the ledger instead of persisted in state. */
 	finalReport?: string;
 	finalCleanCondition?: string;
 	finalDiffInspection?: string;
@@ -171,6 +172,7 @@ export type LoopState = {
 
 export type LoopEntry = {
 	version: 1;
+	/** Full state only for restore milestones; compact/no-op events store null to avoid repeated snapshots. */
 	state: LoopState | null;
 	event: string;
 	at: number;

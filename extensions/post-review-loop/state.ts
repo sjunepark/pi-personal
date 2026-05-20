@@ -33,9 +33,29 @@ export function latestStateFromSession(ctx: ExtensionContext): LoopState | null 
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = entries[index] as { type?: string; customType?: string; data?: Partial<LoopEntry> };
 		if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
-		return isLoopState(entry.data?.state) ? clone(entry.data.state) : null;
+		if (entry.data?.event === "cleared") return null;
+		if (isLoopState(entry.data?.state)) return clone(entry.data.state);
 	}
 	return null;
+}
+
+const FULL_STATE_EVENTS = new Set([
+	"started",
+	"phase-submitted",
+	"checkpoint-completed",
+	"checkpoint-failed",
+	"checkpoint-restored-paused",
+	"reload-paused",
+	"paused",
+	"resumed",
+	"stopped",
+	"final-report-rendered",
+	"aborted",
+	"cleared",
+]);
+
+function shouldPersistFullState(event: string): boolean {
+	return FULL_STATE_EVENTS.has(event);
 }
 
 function normalizeLimit(limit: number | undefined): number {
@@ -76,7 +96,7 @@ export class ReviewLoopRuntime {
 	}
 
 	entry(event: string): LoopEntry {
-		return { version: 1, state: this.state, event, at: now() };
+		return { version: 1, state: shouldPersistFullState(event) ? this.state : null, event, at: now() };
 	}
 
 	start(scope: string, baseline: BaselineState, options?: { limit?: number; reviewOnly?: boolean }): LoopState {
@@ -204,9 +224,10 @@ export class ReviewLoopRuntime {
 		return this.state!;
 	}
 
-	completeWithReport(report: string): LoopState {
+	completeWithReport(_report: string): LoopState {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
-		this.#state = { ...this.#state, lifecycle: "complete", phase: "final-report", finalReport: report, updatedAt: now() };
+		const { finalReport: _finalReport, ...stateWithoutRenderedReport } = this.#state;
+		this.#state = { ...stateWithoutRenderedReport, lifecycle: "complete", phase: "final-report", updatedAt: now() };
 		return this.state!;
 	}
 }

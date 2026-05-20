@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ReviewLoopCompactor } from "./compact.js";
 import { createAfterReviewCommit, establishBaseline, failedAfterReviewCommit } from "./git.js";
-import { countCurrentActionableBucketI, countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems } from "./ledger.js";
-import { phasePrompt, renderLedgerSummary, resumePrompt } from "./prompts.js";
-import { renderCurrentReport, renderFinalReport, renderReviewSummary } from "./report.js";
+import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
+import { phasePrompt, resumePrompt } from "./prompts.js";
+import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
-import type { LoopState, PhaseResult } from "./types.js";
+import type { BucketIStatus, BucketIIStatus, LoopState, PhaseResult } from "./types.js";
 import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
@@ -28,20 +28,12 @@ const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
 
 const PhaseSchema = Type.Union([Type.Literal("post-review"), Type.Literal("impl-review"), Type.Literal("impl")]);
 const ValidationStatusSchema = Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]);
-const BucketIStatusSchema = Type.Union([
-	Type.Literal("candidate"),
-	Type.Literal("accepted"),
-	Type.Literal("applied"),
-	Type.Literal("rejected"),
-	Type.Literal("remaining"),
-	Type.Literal("downgraded"),
-]);
-const BucketIIStatusSchema = Type.Union([
-	Type.Literal("left for user decision"),
-	Type.Literal("deferred"),
-	Type.Literal("kept as-is for now"),
-	Type.Literal("implemented after explicit approval"),
-]);
+const BucketIStatusSchema = Type.String({
+	description: 'Allowed: "candidate", "accepted", "applied", "rejected", "remaining", "downgraded".',
+});
+const BucketIIStatusSchema = Type.String({
+	description: 'Allowed: "left for user decision", "deferred", "kept as-is for now", "implemented after explicit approval". Common aliases like "open" are normalized.',
+});
 
 const ValidationSchema = Type.Object({
 	command: Type.String({ minLength: 1 }),
@@ -218,47 +210,88 @@ function compactText(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
 
-function statusLines(state: LoopState): string[] {
-	const currentBucketI = currentBucketIItems(state.bucketI);
-	const currentBucketII = currentBucketIIItems(state.bucketII);
-	const bucketIIUnresolved = countCurrentUnresolvedBucketII(state.bucketII);
-	const bucketIActionable = countCurrentActionableBucketI(state.bucketI);
-	const failedValidation = state.validation.filter((item) => item.result === "failed").length;
-	return [
-		`post-review-loop: ${state.lifecycle}`,
-		`phase: ${state.phase}`,
-		`iteration: ${state.iteration}/${state.limit}`,
-		`scope: ${compactText(state.scope)}`,
-		`baseline: ${state.baseline.ref} (${state.baseline.mode})`,
-		`after-review: ${state.afterReviewCommit.ref} (${state.afterReviewCommit.mode})`,
-		`Bucket I current actionable/pending: ${bucketIActionable}/${currentBucketI.length} (${state.bucketI.length} ledger entries)`,
-		`Bucket II unresolved/current: ${bucketIIUnresolved}/${currentBucketII.length}`,
-		`validation: ${state.validation.length} records, ${failedValidation} failed`,
-		compactor.pending ? "checkpoint: pending" : "checkpoint: none",
-		state.lastError ? `last error: ${state.lastError}` : undefined,
-	].filter((line): line is string => Boolean(line));
-}
-
 function statusText(state: LoopState | null): string {
 	if (!state) return "No post-review-loop state.";
-	return `${statusLines(state).join("\n")}\n\nWhat was reviewed:\n${renderReviewSummary(state)}\n\nLedger:\n${renderLedgerSummary(state)}`;
+	return compactStatusMarkdown(state);
 }
 
-function statusMarkdown(state: LoopState | null): string {
+function compactStatusMarkdown(state: LoopState | null): string {
 	if (!state) return "No post-review-loop state.";
+	const currentBucketI = currentBucketIItems(state.bucketI);
+	const actionableBucketI = currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining");
+	const currentBucketII = currentBucketIIItems(state.bucketII);
+	const unresolvedBucketII = currentBucketII.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now");
+	const failedValidation = state.validation.filter((item) => item.result === "failed").slice(-3);
 	return [
 		"# Post-Review Loop Status",
 		"",
-		...statusLines(state).map((line) => `- ${line}`),
+		`- Lifecycle: ${state.lifecycle}`,
+		`- Phase: ${state.phase}`,
+		`- Iteration: ${state.iteration}/${state.limit}`,
+		`- Scope: ${compactText(state.scope)}`,
+		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${compactText(state.lastGate.reason)}` : "none"}`,
+		compactor.pending ? "- Checkpoint: pending" : "- Checkpoint: none",
+		state.lastError ? `- Last error: ${state.lastError}` : undefined,
 		"",
-		"## What Was Reviewed",
+		"## Required Next Action",
 		"",
-		renderReviewSummary(state),
+		requiredNextAction(state),
 		"",
-		"## Ledger",
+		"## Actionable Bucket I",
 		"",
-		renderLedgerSummary(state),
-	].join("\n");
+		actionableBucketI.length ? actionableBucketI.map((item) => `- [${item.status}] ${compactText(item.title)}`).join("\n") : "- none",
+		"",
+		"## Unresolved Bucket II",
+		"",
+		unresolvedBucketII.length ? unresolvedBucketII.map((item) => `- [${item.status}] ${compactText(item.title)}`).join("\n") : "- none",
+		"",
+		"## Recent Failed Validation",
+		"",
+		failedValidation.length ? failedValidation.map((item) => `- ${compactText(item.command)} — ${compactText(item.notes)}`).join("\n") : "- none",
+	]
+		.filter((part): part is string => Boolean(part))
+		.join("\n");
+}
+
+function fullStatusMarkdown(state: LoopState | null): string {
+	if (!state) return "No post-review-loop state.";
+	if (state.lifecycle === "complete" || state.phase === "final-report") return renderFinalReport(state, { full: true });
+	return renderCurrentReport(state, { full: true });
+}
+
+function statusMarkdown(state: LoopState | null, options: { full?: boolean } = {}): string {
+	return options.full ? fullStatusMarkdown(state) : compactStatusMarkdown(state);
+}
+
+function requiredNextAction(state: LoopState): string {
+	if (state.lifecycle === "checkpointing") return "Stop substantial work and wait for checkpoint compaction to finish.";
+	if (state.lifecycle === "paused") return "Resume the loop before submitting another phase result.";
+	if (state.phase === "final-report") return "Render or inspect the final report.";
+	return `Complete ${state.phase} iteration ${state.iteration}, then call post_review_loop_submit_phase_result.`;
+}
+
+function compactToolDetails(state: LoopState | null, extra: Record<string, unknown> = {}): Record<string, unknown> {
+	if (!state) return { state: null, checkpointPending: compactor.pending, ...extra };
+	const currentBucketI = currentBucketIItems(state.bucketI);
+	const currentBucketII = currentBucketIIItems(state.bucketII);
+	return {
+		state: {
+			id: state.id,
+			lifecycle: state.lifecycle,
+			phase: state.phase,
+			iteration: state.iteration,
+			limit: state.limit,
+			lastGate: state.lastGate ? { decision: state.lastGate.decision, reason: state.lastGate.reason } : undefined,
+			actionableBucketI: currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining").map((item) => item.title),
+			unresolvedBucketII: currentBucketII
+				.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now")
+				.map((item) => item.title),
+			failedValidation: state.validation.filter((item) => item.result === "failed").slice(-3),
+			requiredNextAction: requiredNextAction(state),
+		},
+		checkpointPending: compactor.pending,
+		...extra,
+	};
 }
 
 function statusBar(state: LoopState | null): string | undefined {
@@ -311,10 +344,50 @@ function parseStartArgs(args: string): { scope: string; limit?: number; reviewOn
 	return { scope: scopeParts.join(" ").trim(), limit, reviewOnly, gitCheckpoint };
 }
 
-function renderReportOnly(): string {
+function renderReportOnly(options: { full?: boolean } = {}): string {
 	const state = runtime.state;
 	if (!state) throw new Error("No post-review-loop state.");
-	return state.lifecycle === "complete" || state.phase === "final-report" ? renderFinalReport(state) : renderCurrentReport(state);
+	return state.lifecycle === "complete" || state.phase === "final-report" ? renderFinalReport(state, options) : renderCurrentReport(state, options);
+}
+
+const BUCKET_I_STATUSES: BucketIStatus[] = ["candidate", "accepted", "applied", "rejected", "remaining", "downgraded"];
+const BUCKET_II_STATUSES: BucketIIStatus[] = ["left for user decision", "deferred", "kept as-is for now", "implemented after explicit approval"];
+const BUCKET_I_STATUS_BY_KEY = new Map<string, BucketIStatus>(BUCKET_I_STATUSES.map((status): [string, BucketIStatus] => [status, status]));
+const BUCKET_II_STATUS_BY_KEY = new Map<string, BucketIIStatus>(BUCKET_II_STATUSES.map((status): [string, BucketIIStatus] => [status, status]));
+const BUCKET_II_STATUS_ALIASES: Record<string, BucketIIStatus> = {
+	open: "left for user decision",
+	unresolved: "left for user decision",
+	pending: "left for user decision",
+	"needs decision": "left for user decision",
+	"needs user decision": "left for user decision",
+	kept: "kept as-is for now",
+	"kept as-is": "kept as-is for now",
+	implemented: "implemented after explicit approval",
+};
+
+function normalizeBucketIIStatus(value: string): BucketIIStatus {
+	const cleanValue = compactText(value).toLowerCase();
+	const aliased = BUCKET_II_STATUS_ALIASES[cleanValue];
+	if (aliased) return aliased;
+	const canonical = BUCKET_II_STATUS_BY_KEY.get(cleanValue);
+	if (canonical) return canonical;
+	throw new Error(
+		`Invalid Bucket II status "${value}". Allowed: "left for user decision", "deferred", "kept as-is for now", "implemented after explicit approval".`,
+	);
+}
+
+function normalizeBucketIStatus(value: string): BucketIStatus {
+	const canonical = BUCKET_I_STATUS_BY_KEY.get(compactText(value).toLowerCase());
+	if (canonical) return canonical;
+	throw new Error(`Invalid Bucket I status "${value}". Allowed: "candidate", "accepted", "applied", "rejected", "remaining", "downgraded".`);
+}
+
+function normalizePhaseResult(params: PhaseResult): PhaseResult {
+	return {
+		...params,
+		bucketI: params.bucketI.map((item) => ({ ...item, status: normalizeBucketIStatus(String(item.status)) })),
+		bucketII: params.bucketII.map((item) => ({ ...item, status: normalizeBucketIIStatus(String(item.status)) })),
+	};
 }
 
 function registerMarkdownRenderer(pi: ExtensionAPI): void {
@@ -357,7 +430,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 	pi.registerCommand(name, {
 		description: "Run the deterministic post-review-loop workflow",
 		getArgumentCompletions(prefix) {
-			const options = ["start", "start --limit 3", "start --review-only", "start --no-git-checkpoint", "status", "pause", "resume", "stop", "report", "clear"];
+			const options = ["start", "start --limit 3", "start --review-only", "start --no-git-checkpoint", "status", "status --full", "pause", "resume", "stop", "report", "report --full", "clear"];
 			const filtered = options.filter((value) => value.startsWith(prefix));
 			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
 		},
@@ -367,7 +440,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			const restText = rest.join(" ");
 
 			if (subcommand === "status") {
-				showMarkdownMessage(pi, "Post-review-loop status", statusMarkdown(runtime.state));
+				showMarkdownMessage(pi, "Post-review-loop status", statusMarkdown(runtime.state, { full: rest.includes("--full") }));
 				return;
 			}
 
@@ -403,7 +476,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			}
 
 			if (subcommand === "report") {
-				showMarkdownMessage(pi, "Post-review-loop report", renderReportOnly());
+				showMarkdownMessage(pi, "Post-review-loop report", renderReportOnly({ full: rest.includes("--full") }));
 				return;
 			}
 
@@ -451,7 +524,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		parameters: Type.Object({}),
 		async execute() {
 			const state = runtime.state;
-			return textToolResult(statusMarkdown(state), { state, checkpointPending: compactor.pending });
+			return textToolResult(statusMarkdown(state), compactToolDetails(state));
 		},
 		renderResult(result) {
 			const text = result.content.find((item) => item.type === "text")?.text ?? "";
@@ -476,21 +549,21 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params: PhaseResult, _signal, _onUpdate, ctx) {
 			try {
-				const { state, gate } = runtime.submit(params);
+				const normalized = normalizePhaseResult(params);
+				const { state, gate } = runtime.submit(normalized);
 				persist(pi, ctx, "phase-submitted");
 				if (gate.decision === "stop") {
 					const report = completeWithReport(pi, ctx, "final-report-rendered");
 					queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
-					return textToolResult("Post-review-loop stopped. The final report will render as a separate markdown message.", { state: runtime.state, gate }, false, true);
+					return textToolResult("Post-review-loop stopped. The final report will render as a separate markdown message.", compactToolDetails(runtime.state, { gate }), false, true);
 				}
 
 				const queued = compactor.queue(pi, ctx, state);
 				persist(pi, ctx, queued ? "checkpoint-queued" : "checkpoint-queue-rejected");
-				if (!queued) return textToolResult("A checkpoint is already pending. Stop substantial work and wait for the next phase prompt.", { state, gate }, true, true);
+				if (!queued) return textToolResult("A checkpoint is already pending. Stop substantial work and wait for the next phase prompt.", compactToolDetails(state, { gate }), true, true);
 				return textToolResult(
 					`Phase result accepted. Gate decision: continue to ${gate.nextPhase}. Checkpoint compaction is queued; stop substantial work for this turn.`,
-					{
-						state,
+					compactToolDetails(state, {
 						gate,
 						checkpointPending: true,
 						notify: {
@@ -498,13 +571,13 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 							status: "Continuing",
 							logMessage: "Post-review-loop phase accepted; checkpoint compaction is queued",
 						},
-					},
+					}),
 					false,
 					true,
 				);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return textToolResult(message, { state: runtime.state }, true, false);
+				return textToolResult(message, compactToolDetails(runtime.state, { error: message }), true, false);
 			}
 		},
 	});
@@ -519,9 +592,10 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 				runtime.abort(params.reason);
 				const report = completeWithReport(pi, ctx, "aborted");
 				queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
-				return textToolResult("Post-review-loop aborted. The final report will render as a separate markdown message.", { state: runtime.state }, false, true);
+				return textToolResult("Post-review-loop aborted. The final report will render as a separate markdown message.", compactToolDetails(runtime.state), false, true);
 			} catch (error) {
-				return textToolResult(error instanceof Error ? error.message : String(error), { state: runtime.state }, true);
+				const message = error instanceof Error ? error.message : String(error);
+				return textToolResult(message, compactToolDetails(runtime.state, { error: message }), true);
 			}
 		},
 	});
