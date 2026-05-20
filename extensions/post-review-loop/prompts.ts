@@ -70,6 +70,7 @@ Rules:
 - Inspect real files and diffs. Do not rely only on summaries.
 - When scope is the default "uncommitted changes", review staged changes, unstaged changes, and untracked files from git status/diff unless the user provided a narrower target.
 - Keep Bucket I narrow: concrete, safe, in-scope, worthwhile, and root-cause fixable now.
+- Treat Bucket I as auto-fix-track work: candidates are not edited during review phases, but accepted Bucket I items should be implemented by the loop unless scope, validation, or user approval blocks safe work.
 - Put real issues that need user/product/architecture decisions in Bucket II.
 - For Bucket II, submit only new or materially changed decision items. To update an existing item, reuse its title verbatim; do not resubmit unchanged existing items.
 - Reject speculative polish, noisy preferences, and future-proofing.
@@ -88,6 +89,7 @@ function bucketSchemaReminder(): string {
 - changedFiles lists files inspected, reviewed, or touched during this phase; it is not evidence that the loop edited those files.
 - codeChanges is the authoritative record of loop edits and should be empty unless this phase edited code.
 - bucketI items need title, revealed, status, fix, files, bandageReason, and validation references.
+- Bucket I status meanings: "candidate" = found but not yet verified for implementation; "accepted" = verified and expected to be auto-fixed in impl; "applied" = actually fixed; "remaining" = still actionable but not fixed; "rejected"/"downgraded" = no longer Bucket I auto-fix work.
 - bucketII items need title, revealed, weakness, options, recommendedAction, tradeoffs, and status.
 - rejectedOrKeptAsIs should explain why a possible finding was rejected or kept.`;
 }
@@ -99,8 +101,8 @@ export function phasePrompt(state: LoopState, phase: Phase = state.phase as Phas
 
 Your task for post-review:
 1. Review the current diff and nearby architecture after the previous implementation work.
-2. Do not edit code.
-3. Produce Bucket I candidates only when they are clearly actionable now.
+2. Do not edit code in this phase; this phase identifies candidates for the loop to verify and fix later.
+3. Produce Bucket I candidates only when they are clearly actionable now and likely safe for automatic implementation after verification.
 4. Produce Bucket II recommendations for larger decisions.
 5. Submit the phase result with Bucket I candidate statuses as "candidate" or "remaining".
 
@@ -112,8 +114,8 @@ ${bucketSchemaReminder()}`;
 
 Your task for impl-review:
 1. Re-verify every Bucket I candidate against actual code paths and tests.
-2. Do not edit code.
-3. Accept only items that are safe, in scope, and have a clear root-cause fix.
+2. Do not edit code in this phase; this phase decides what the next impl phase should auto-fix.
+3. Accept only items that are safe, in scope, and have a clear root-cause fix you expect the loop to implement without further user input.
 4. Reject, downgrade, or move uncertain items to Bucket II.
 5. Submit the phase result with accepted items marked "accepted" or "remaining".
 
@@ -123,11 +125,12 @@ ${bucketSchemaReminder()}`;
 	return `${header}
 
 Your task for impl:
-1. Implement only accepted Bucket I fixes.
+1. Implement all accepted Bucket I fixes unless a concrete blocker appears.
 2. Keep the change tight and integrated.
 3. Run focused repository validation using existing commands.
-4. Submit applied fixes as Bucket I status "applied" and include codeChanges records.
-5. Do not implement Bucket II unless the user explicitly approved it.
+4. Submit fixed items as Bucket I status "applied" and include codeChanges records.
+5. If an accepted Bucket I item cannot be safely fixed, leave it as "remaining", record the blocker in the item and validation/scope flags when appropriate, and do not pretend the loop is clean.
+6. Do not implement Bucket II unless the user explicitly approved it.
 
 ${bucketSchemaReminder()}`;
 }

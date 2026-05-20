@@ -453,6 +453,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Call only at the end of the active post-review-loop phase.",
 			"The extension, not the model, decides whether to continue or stop.",
+			"Treat accepted Bucket I as auto-fix-track work: impl phases should apply it unless a concrete blocker exists; candidates are not fixed during review-only phases.",
 			"Only submit new or materially changed Bucket II items; reuse the existing title verbatim for updates and omit unchanged existing Bucket II items.",
 			"After a continue result, stop substantial work until the next phase prompt arrives.",
 		],

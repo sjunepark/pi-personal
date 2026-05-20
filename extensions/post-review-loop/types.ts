@@ -9,6 +9,8 @@ export type Verdict =
 	| "Loop stopped: Bucket II decision needed"
 	| "Loop stopped: iteration limit reached"
 	| "Loop stopped: validation failure remains"
+	| "Loop stopped: review-only pass completed"
+	| "Loop stopped: Bucket I fixes were not applied"
 	| "Loop stopped: scope or context needed"
 	| "Loop stopped: checkpoint compaction unavailable";
 

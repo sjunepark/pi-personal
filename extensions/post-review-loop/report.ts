@@ -1,4 +1,4 @@
-import { countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems } from "./ledger.js";
+import { countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems, isActionableBucketI } from "./ledger.js";
 import type { BucketIItem, BucketIIItem, CodeChange, LoopState, RejectedItem, ValidationResult } from "./types.js";
 
 const BASELINE_MODE_LABELS: Record<string, string> = {
@@ -78,8 +78,8 @@ function renderValidation(records: ValidationResult[]): string {
 	return rows.join("\n");
 }
 
-function renderBucketI(records: BucketIItem[]): string {
-	if (!records.length) return "No Bucket I findings were found.";
+function renderBucketI(records: BucketIItem[], empty = "No Bucket I findings were found."): string {
+	if (!records.length) return empty;
 	return records
 		.map(
 			(item, index) => `${index + 1}. ${line(item.title)}
@@ -91,6 +91,48 @@ function renderBucketI(records: BucketIItem[]): string {
    - Validation evidence: ${list(item.validation)}`,
 		)
 		.join("\n\n");
+}
+
+function bucketIOutcomeGroups(records: BucketIItem[]): { applied: BucketIItem[]; actionable: BucketIItem[]; closedWithoutFix: BucketIItem[] } {
+	return {
+		applied: records.filter((item) => item.status === "applied"),
+		actionable: records.filter(isActionableBucketI),
+		closedWithoutFix: records.filter((item) => item.status === "rejected" || item.status === "downgraded"),
+	};
+}
+
+function bucketIOutcomeSummary(records: BucketIItem[]): string {
+	const groups = bucketIOutcomeGroups(records);
+	return `${groups.applied.length} applied / ${groups.actionable.length} still actionable / ${groups.closedWithoutFix.length} rejected or downgraded`;
+}
+
+function cleanCondition(state: LoopState, records: BucketIItem[], verdict: string, hasStopGate: boolean): string {
+	if (state.finalCleanCondition) return state.finalCleanCondition;
+	const actionable = bucketIOutcomeGroups(records).actionable;
+	if (actionable.length) return `${actionable.length} Bucket I item(s) remain actionable and were not applied.`;
+	if (hasStopGate && verdict.startsWith("Loop clean")) return "No accepted/actionable Bucket I findings remain.";
+	return "Loop stopped before clean condition was proven.";
+}
+
+function renderBucketIOutcomeSections(records: BucketIItem[]): string {
+	if (!records.length) return "No Bucket I findings were found.";
+	const { applied, actionable, closedWithoutFix } = bucketIOutcomeGroups(records);
+	return [
+		"### Applied by the Loop",
+		"Bucket I items with status `applied`. These should also have implementation detail in `Code Changes Applied`.",
+		"",
+		renderBucketI(applied, "No Bucket I fixes were applied by the loop."),
+		"",
+		"### Still Actionable / Not Yet Applied",
+		"Bucket I items still marked `candidate`, `accepted`, or `remaining`. These were not fixed by this loop report's current ledger state.",
+		"",
+		renderBucketI(actionable, "No unapplied actionable Bucket I items remain."),
+		"",
+		"### Rejected or Downgraded",
+		"Bucket I items the loop decided not to fix as Bucket I work.",
+		"",
+		renderBucketI(closedWithoutFix, "No Bucket I items were rejected or downgraded."),
+	].join("\n");
 }
 
 function renderBucketII(records: BucketIIItem[]): string {
@@ -160,7 +202,7 @@ export function renderCurrentReport(state: LoopState): string {
 		...renderBaselineLines(state, baselineKind),
 		...renderAfterReviewLines(state, afterReviewKind),
 		...renderFileScopeLines(state),
-		`- Bucket I current findings: ${currentBucketI.length} (${state.bucketI.length} ledger entries)`,
+		`- Bucket I current findings: ${currentBucketI.length} (${state.bucketI.length} ledger entries; ${bucketIOutcomeSummary(currentBucketI)})`,
 		`- Bucket II unresolved/current findings: ${unresolvedBucketII}/${currentBucketII.length} (${state.bucketII.length} stored entries)`,
 		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none"}`,
 		"- Verdict: in progress — no final verdict has been rendered",
@@ -177,9 +219,9 @@ export function renderCurrentReport(state: LoopState): string {
 		"",
 		renderValidation(state.validation),
 		"",
-		"## Bucket I — Current Findings and Fixes",
+		"## Bucket I — Current Findings by Outcome",
 		"",
-		renderBucketI(currentBucketI),
+		renderBucketIOutcomeSections(currentBucketI),
 		"",
 		"## Bucket II — Findings and Recommendations",
 		"",
@@ -203,8 +245,9 @@ export function renderFinalReport(state: LoopState): string {
 	const hasStopGate = Boolean(stopGate);
 	const verdict = stopGate?.verdict ?? "Loop stopped: scope or context needed";
 	const stopReason = state.lastGate?.reason ?? "report requested before a final stop gate";
-	const finalCleanCondition = state.finalCleanCondition ?? (hasStopGate && verdict.startsWith("Loop clean") ? "No accepted/actionable Bucket I findings remain." : "Loop stopped before clean condition was proven.");
 	const finalDiffInspection = state.finalDiffInspection ?? "Inspect the reviewed/edited file lists and validation table above.";
+	const currentBucketI = currentBucketIItems(state.bucketI);
+	const finalCleanCondition = cleanCondition(state, currentBucketI, verdict, hasStopGate);
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 
 	return [
@@ -219,6 +262,7 @@ export function renderFinalReport(state: LoopState): string {
 		`- Scope: ${line(state.scope)}`,
 		`- Iterations: ${state.iteration}/${state.limit}`,
 		...renderFileScopeLines(state),
+		`- Bucket I outcome: ${bucketIOutcomeSummary(currentBucketI)}`,
 		`- Stop reason: ${line(stopReason)}`,
 		`- Final clean condition: ${line(finalCleanCondition)}`,
 		`- Final diff / validation confirmation: ${line(finalDiffInspection)}`,
@@ -236,9 +280,9 @@ export function renderFinalReport(state: LoopState): string {
 		"",
 		renderValidation(state.validation),
 		"",
-		"## Bucket I — Findings and Fixes",
+		"## Bucket I — Findings by Outcome",
 		"",
-		renderBucketI(state.bucketI),
+		renderBucketIOutcomeSections(currentBucketI),
 		"",
 		"## Bucket II — Findings and Recommendations",
 		"",
