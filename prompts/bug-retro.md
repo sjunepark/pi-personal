@@ -36,10 +36,14 @@ Answer these questions with evidence from the code and observed failure:
      - small low-risk refactor worth applying now
      - larger refactor or design change worth discussing first
      - narrow regression coverage only if it clarifies or protects the design invariant
-   - For each refactor, explain:
+   - When proposing design enhancements or refactors that are not obviously local and low-risk, present 2-4 viable options instead of a single preferred path.
+   - For each option or refactor, explain:
      - what invariant or boundary it strengthens
      - how it prevents this class of bug
+     - pros and concrete benefits
+     - cons, tradeoffs, and practical limits
      - risk, effort, and expected payoff
+   - Clearly identify the recommended option, but preserve enough comparison detail for the user to choose among alternatives.
    - Prefer making invalid states unrepresentable over adding defensive patches.
 
 4. What should we do next?
@@ -56,8 +60,8 @@ Use this output shape:
 
 ## Robustness improvements
 
-| Option | Prevents | Effort | Risk | Recommendation |
-| --- | --- | --- | --- | --- |
+| Option | Prevents | Pros | Cons / tradeoffs | Effort | Risk | Recommendation |
+| --- | --- | --- | --- | --- | --- | --- |
 
 ## Applied patch, if any
 
