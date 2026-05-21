@@ -212,6 +212,12 @@ function compactText(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
 
+function compactStatusText(value: string, maxChars = 220): string {
+	const cleaned = compactText(value);
+	if (cleaned.length <= maxChars) return cleaned;
+	return `${cleaned.slice(0, maxChars).trimEnd()}… [truncated ${cleaned.length - maxChars} chars]`;
+}
+
 function unique(values: string[]): string[] {
 	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
@@ -252,10 +258,10 @@ function compactStatusMarkdown(state: LoopState | null, options: { currentFinger
 		`- Lifecycle: ${state.lifecycle}`,
 		`- Phase: ${state.phase}`,
 		`- Iteration: ${state.iteration}/${state.limit}`,
-		`- Scope: ${compactText(state.scope)}`,
-		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${compactText(state.lastGate.reason)}` : "none"}`,
+		`- Scope: ${compactStatusText(state.scope, 600)}`,
+		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${compactStatusText(state.lastGate.reason, 260)}` : "none"}`,
 		compactor.pending ? "- Checkpoint: pending" : "- Checkpoint: none",
-		state.lastError ? `- Last error: ${state.lastError}` : undefined,
+		state.lastError ? `- Last error: ${compactStatusText(state.lastError, 260)}` : undefined,
 		"",
 		"## Required Next Action",
 		"",
@@ -263,15 +269,15 @@ function compactStatusMarkdown(state: LoopState | null, options: { currentFinger
 		"",
 		"## Actionable Bucket I",
 		"",
-		actionableBucketI.length ? actionableBucketI.map((item) => `- [${item.status}] ${compactText(item.title)}`).join("\n") : "- none",
+		actionableBucketI.length ? actionableBucketI.map((item) => `- [${item.status}] ${compactStatusText(item.title)}`).join("\n") : "- none",
 		"",
 		"## Unresolved Bucket II",
 		"",
-		unresolvedBucketII.length ? unresolvedBucketII.map((item) => `- [${item.status}] ${compactText(item.title)}`).join("\n") : "- none",
+		unresolvedBucketII.length ? unresolvedBucketII.map((item) => `- [${item.status}] ${compactStatusText(item.title)}`).join("\n") : "- none",
 		"",
 		"## Recent Failed Validation",
 		"",
-		failedValidation.length ? failedValidation.map((item) => `- ${compactText(item.command)} — ${compactText(item.notes)}`).join("\n") : "- none",
+		failedValidation.length ? failedValidation.map((item) => `- ${compactStatusText(item.command)} — ${compactStatusText(item.notes, 260)}`).join("\n") : "- none",
 		"",
 		"## Reusable Evidence",
 		"",
@@ -309,12 +315,15 @@ function compactToolDetails(state: LoopState | null, extra: Record<string, unkno
 			phase: state.phase,
 			iteration: state.iteration,
 			limit: state.limit,
-			lastGate: state.lastGate ? { decision: state.lastGate.decision, reason: state.lastGate.reason } : undefined,
-			actionableBucketI: currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining").map((item) => item.title),
+			lastGate: state.lastGate ? { decision: state.lastGate.decision, reason: compactStatusText(state.lastGate.reason, 260) } : undefined,
+			actionableBucketI: currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining").map((item) => compactStatusText(item.title)),
 			unresolvedBucketII: currentBucketII
 				.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now")
-				.map((item) => item.title),
-			failedValidation: state.validation.filter((item) => item.result === "failed").slice(-3),
+				.map((item) => compactStatusText(item.title)),
+			failedValidation: state.validation
+				.filter((item) => item.result === "failed")
+				.slice(-3)
+				.map((item) => ({ ...item, command: compactStatusText(item.command), notes: compactStatusText(item.notes, 260) })),
 			requiredNextAction: requiredNextAction(state),
 		},
 		checkpointPending: compactor.pending,
