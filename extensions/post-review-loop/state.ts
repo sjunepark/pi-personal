@@ -1,8 +1,21 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { basename } from "node:path";
 import { decideNext } from "./gate.js";
 import { countCurrentUnresolvedBucketII, mergeBucketIIItems } from "./ledger.js";
-import { defaultAfterReviewCommit, normalizeAfterReviewCommit } from "./git.js";
-import type { AfterReviewCommitState, BaselineState, GateDecision, GateSnapshot, LoopEntry, LoopState, Phase, PhaseResult } from "./types.js";
+import { defaultAfterReviewCommit, hashText, normalizeAfterReviewCommit } from "./git.js";
+import type {
+	AfterReviewCommitState,
+	BaselineState,
+	GateDecision,
+	GateSnapshot,
+	LoopEntry,
+	LoopState,
+	Phase,
+	PhaseEvidenceCache,
+	PhaseResult,
+	ValidationCacheEntry,
+	WorktreeFingerprint,
+} from "./types.js";
 import { DEFAULT_LIMIT, ENTRY_TYPE, MAX_SCOPE_CHARS } from "./types.js";
 
 function now(): number {
@@ -21,6 +34,14 @@ function clone<T>(value: T): T {
 	return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function normalizeState(state: LoopState): LoopState {
+	return {
+		...state,
+		validationCache: state.validationCache ?? [],
+		phaseCaches: state.phaseCaches ?? [],
+	};
+}
+
 function isLoopState(value: unknown): value is LoopState {
 	if (!value || typeof value !== "object") return false;
 	const state = value as Partial<LoopState>;
@@ -34,7 +55,7 @@ export function latestStateFromSession(ctx: ExtensionContext): LoopState | null 
 		const entry = entries[index] as { type?: string; customType?: string; data?: Partial<LoopEntry> };
 		if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
 		if (entry.data?.event === "cleared") return null;
-		if (isLoopState(entry.data?.state)) return clone(entry.data.state);
+		if (isLoopState(entry.data?.state)) return normalizeState(clone(entry.data.state));
 	}
 	return null;
 }
@@ -84,6 +105,61 @@ function countForPhase(state: LoopState, result: PhaseResult): GateSnapshot {
 	};
 }
 
+function validationScopeFiles(result: PhaseResult): string[] {
+	return unique([...result.changedFiles, ...result.codeChanges.flatMap((item) => item.files), ...result.bucketI.flatMap((item) => item.files)]);
+}
+
+function commandRelevantFiles(command: string, candidates: string[]): string[] {
+	const normalizedCommand = command.replace(/\\/g, "/");
+	const direct = candidates.filter((file) => normalizedCommand.includes(file) || normalizedCommand.includes(basename(file)));
+	return direct.length ? direct : candidates;
+}
+
+function fileInputHash(files: string[], fingerprint: WorktreeFingerprint): { inputHash: string; fileHashes: Record<string, string | null> } {
+	const fileHashes: Record<string, string | null> = {};
+	for (const file of files.sort()) fileHashes[file] = fingerprint.fileHashes[file] ?? null;
+	return { inputHash: hashText(JSON.stringify(fileHashes)), fileHashes };
+}
+
+function validationCacheEntries(cwd: string, result: PhaseResult, fingerprint: WorktreeFingerprint): ValidationCacheEntry[] {
+	const candidateFiles = validationScopeFiles(result);
+	return result.validation
+		.filter((record) => record.result !== "skipped")
+		.map((record) => {
+			const relevantFiles = commandRelevantFiles(record.command, candidateFiles);
+			const fileInput = relevantFiles.length ? fileInputHash(relevantFiles, fingerprint) : undefined;
+			return {
+				command: record.command,
+				cwd,
+				phase: record.phase,
+				result: record.result,
+				notes: record.notes,
+				source: record.source ?? "fresh",
+				at: now(),
+				inputKind: fileInput ? "files" : "worktree",
+				inputHash: fileInput?.inputHash ?? fingerprint.overallHash,
+				worktreeHash: fingerprint.overallHash,
+				relevantFiles,
+				fileHashes: fileInput?.fileHashes,
+			} satisfies ValidationCacheEntry;
+		});
+}
+
+function phaseEvidenceCache(result: PhaseResult, fingerprint: WorktreeFingerprint, gate: GateDecision): PhaseEvidenceCache {
+	return {
+		phase: result.phase,
+		iteration: result.iteration,
+		at: now(),
+		summary: result.summary,
+		changedFiles: unique([...result.changedFiles, ...result.codeChanges.flatMap((item) => item.files)]),
+		fingerprint,
+		activeBucketI: result.bucketI
+			.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining")
+			.map((item) => ({ title: item.title, status: item.status, fix: item.fix, files: item.files })),
+		gateDecision: `${gate.decision}: ${gate.reason}`,
+	};
+}
+
 export class ReviewLoopRuntime {
 	#state: LoopState | null = null;
 
@@ -92,7 +168,7 @@ export class ReviewLoopRuntime {
 	}
 
 	restore(state: LoopState | null): void {
-		this.#state = state ? clone(state) : null;
+		this.#state = state ? normalizeState(clone(state)) : null;
 	}
 
 	entry(event: string): LoopEntry {
@@ -119,6 +195,8 @@ export class ReviewLoopRuntime {
 			updatedAt: timestamp,
 			filesChanged: [],
 			validation: [],
+			validationCache: [],
+			phaseCaches: [],
 			bucketI: [],
 			bucketII: [],
 			codeChanges: [],
@@ -167,7 +245,7 @@ export class ReviewLoopRuntime {
 		return this.state!;
 	}
 
-	submit(result: PhaseResult): { state: LoopState; gate: GateDecision } {
+	submit(result: PhaseResult, cacheInput?: { cwd: string; fingerprint: WorktreeFingerprint }): { state: LoopState; gate: GateDecision } {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
 		if (this.#state.lifecycle !== "active") throw new Error(`Loop is ${this.#state.lifecycle}; resume or wait before submitting a phase result.`);
 		if (this.#state.phase !== result.phase) throw new Error(`Expected phase ${this.#state.phase}, got ${result.phase}.`);
@@ -180,6 +258,8 @@ export class ReviewLoopRuntime {
 		const bucketII = mergeBucketIIItems(this.#state.bucketII, result.bucketII);
 		const reviewTargetBriefing = result.reviewTargetBriefing?.trim() || this.#state.reviewTargetBriefing;
 		const commitMessage = result.commitMessage?.subject.trim() ? { subject: result.commitMessage.subject.trim(), body: result.commitMessage.body?.trim() } : this.#state.commitMessage;
+		const nextValidationCache = cacheInput ? validationCacheEntries(cacheInput.cwd, result, cacheInput.fingerprint) : [];
+		const nextPhaseCache = cacheInput ? [phaseEvidenceCache(result, cacheInput.fingerprint, gate)] : [];
 
 		this.#state = {
 			...this.#state,
@@ -191,6 +271,8 @@ export class ReviewLoopRuntime {
 			commitMessage,
 			filesChanged: unique([...this.#state.filesChanged, ...result.changedFiles, ...result.codeChanges.flatMap((item) => item.files)]),
 			validation: [...this.#state.validation, ...result.validation],
+			validationCache: [...(this.#state.validationCache ?? []), ...nextValidationCache],
+			phaseCaches: [...(this.#state.phaseCaches ?? []), ...nextPhaseCache],
 			bucketI: [...this.#state.bucketI, ...result.bucketI],
 			bucketII,
 			codeChanges: [...this.#state.codeChanges, ...result.codeChanges],

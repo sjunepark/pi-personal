@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { computeWorktreeFingerprint } from "./git.js";
 import { phasePrompt, renderLedgerSummary } from "./prompts.js";
 import type { LoopState } from "./types.js";
 
@@ -27,6 +28,19 @@ function formatList(items: string[]): string {
 	return cleaned.length ? cleaned.map((item) => `- ${item}`).join("\n") : "- none";
 }
 
+function unique(values: string[]): string[] {
+	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function fingerprintFiles(state: LoopState): string[] {
+	return unique([
+		...state.baseline.scopedFiles,
+		...state.filesChanged,
+		...state.codeChanges.flatMap((item) => item.files),
+		...state.bucketI.flatMap((item) => item.files),
+	]);
+}
+
 function lastPhaseSummary(state: LoopState): string {
 	const last = state.phasesRun.at(-1);
 	return last ? `Iteration ${last.iteration} ${last.phase}: ${last.summary}` : "No phase has completed yet.";
@@ -42,7 +56,8 @@ Keep:
 - iteration: ${state.iteration}/${state.limit}
 - last completed phase summary: ${lastPhaseSummary(state)}
 - files reviewed / in submitted phase scope
-- validation commands and results
+- phase worktree fingerprints and file hashes for reusable inspection evidence
+- validation cache entries with command, input hash, and fresh/reused source
 - Bucket I findings applied, accepted, remaining, rejected, or downgraded
 - Bucket II decision items and recommended actions
 - rejected or kept-as-is findings and why
@@ -55,6 +70,12 @@ ${formatList(state.filesChanged)}
 
 Persisted ledger summary:
 ${renderLedgerSummary(state)}
+
+Phase evidence cache:
+${JSON.stringify((state.phaseCaches ?? []).slice(-3), null, 2)}
+
+Validation cache:
+${JSON.stringify((state.validationCache ?? []).slice(-8), null, 2)}
 
 Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${state.lastGate.reason}` : "none"}`;
 }
@@ -125,7 +146,9 @@ export class ReviewLoopCompactor {
 					const next = runtime.markReady();
 					persist("checkpoint-completed");
 					notify(ctx, "Post-review-loop checkpoint compaction completed", "info");
-					if (next.phase !== "final-report") pi.sendUserMessage(phasePrompt(next, next.phase), { deliverAs: "followUp" });
+					if (next.phase !== "final-report") {
+						pi.sendUserMessage(phasePrompt(next, next.phase, { currentFingerprint: computeWorktreeFingerprint(ctx.cwd, fingerprintFiles(next)) }), { deliverAs: "followUp" });
+					}
 				},
 				onError: fail,
 			});

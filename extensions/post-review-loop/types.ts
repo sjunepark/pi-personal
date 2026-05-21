@@ -1,6 +1,7 @@
 export type Phase = "post-review" | "impl-review" | "impl";
 export type Lifecycle = "active" | "paused" | "checkpointing" | "complete" | "failed";
 export type ValidationStatus = "passed" | "failed" | "skipped";
+export type ValidationSource = "fresh" | "reused";
 export type BucketIStatus = "candidate" | "accepted" | "applied" | "rejected" | "remaining" | "downgraded";
 export type BucketIIStatus = "left for user decision" | "deferred" | "kept as-is for now" | "implemented after explicit approval";
 
@@ -37,6 +38,8 @@ export type ValidationResult = {
 	result: ValidationStatus;
 	phase: Phase | "final-report";
 	notes: string;
+	/** Whether this row was freshly executed in the phase or reused from an unchanged validation cache. */
+	source?: ValidationSource;
 };
 
 export type BucketIItem = {
@@ -85,6 +88,46 @@ export type PhaseHistoryItem = {
 	iteration: number;
 	gateDecision: string;
 	summary: string;
+};
+
+export type WorktreeFingerprint = {
+	algorithm: "sha256";
+	at: number;
+	head: string;
+	stagedDiffHash: string;
+	unstagedDiffHash: string;
+	untrackedHash: string;
+	untrackedFiles: string[];
+	statusHash: string;
+	overallHash: string;
+	fileHashes: Record<string, string | null>;
+	notes?: string;
+};
+
+export type ValidationCacheEntry = {
+	command: string;
+	cwd: string;
+	phase: Phase | "final-report";
+	result: ValidationStatus;
+	notes: string;
+	source: ValidationSource;
+	at: number;
+	inputKind: "files" | "worktree";
+	inputHash: string;
+	worktreeHash: string;
+	relevantFiles: string[];
+	fileHashes?: Record<string, string | null>;
+};
+
+export type PhaseEvidenceCache = {
+	phase: Phase;
+	iteration: number;
+	at: number;
+	summary: string;
+	changedFiles: string[];
+	fingerprint: WorktreeFingerprint;
+	activeBucketI: Array<Pick<BucketIItem, "title" | "status" | "fix" | "files">>;
+	gateDecision: string;
 };
 
 export type PhaseResult = {
@@ -156,6 +199,8 @@ export type LoopState = {
 	/** Union of submitted phase-scope files. Do not treat this as proof of loop edits. */
 	filesChanged: string[];
 	validation: ValidationResult[];
+	validationCache: ValidationCacheEntry[];
+	phaseCaches: PhaseEvidenceCache[];
 	bucketI: BucketIItem[];
 	bucketII: BucketIIItem[];
 	codeChanges: CodeChange[];

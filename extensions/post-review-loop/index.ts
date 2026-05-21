@@ -5,12 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ReviewLoopCompactor } from "./compact.js";
-import { createAfterReviewCommit, establishBaseline, failedAfterReviewCommit } from "./git.js";
+import { computeWorktreeFingerprint, createAfterReviewCommit, establishBaseline, failedAfterReviewCommit } from "./git.js";
 import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
-import { phasePrompt, resumePrompt } from "./prompts.js";
+import { phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
-import type { BucketIStatus, BucketIIStatus, LoopState, PhaseResult } from "./types.js";
+import type { BucketIStatus, BucketIIStatus, LoopState, PhaseResult, WorktreeFingerprint } from "./types.js";
 import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
@@ -28,6 +28,7 @@ const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
 
 const PhaseSchema = Type.Union([Type.Literal("post-review"), Type.Literal("impl-review"), Type.Literal("impl")]);
 const ValidationStatusSchema = Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]);
+const ValidationSourceSchema = Type.Union([Type.Literal("fresh"), Type.Literal("reused")]);
 const BucketIStatusSchema = Type.String({
 	description: 'Allowed: "candidate", "accepted", "applied", "rejected", "remaining", "downgraded".',
 });
@@ -40,6 +41,7 @@ const ValidationSchema = Type.Object({
 	result: ValidationStatusSchema,
 	phase: Type.Union([PhaseSchema, Type.Literal("final-report")]),
 	notes: Type.String({ minLength: 1 }),
+	source: Type.Optional(ValidationSourceSchema),
 });
 
 const BucketISchema = Type.Object({
@@ -210,12 +212,34 @@ function compactText(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
 
+function unique(values: string[]): string[] {
+	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function fingerprintFiles(state: LoopState): string[] {
+	return unique([
+		...state.baseline.scopedFiles,
+		...state.filesChanged,
+		...state.codeChanges.flatMap((item) => item.files),
+		...state.bucketI.flatMap((item) => item.files),
+	]);
+}
+
+function currentFingerprintForState(ctx: ExtensionContext, state: LoopState | null): WorktreeFingerprint | undefined {
+	if (!state) return undefined;
+	try {
+		return computeWorktreeFingerprint(ctx.cwd, fingerprintFiles(state));
+	} catch {
+		return undefined;
+	}
+}
+
 function statusText(state: LoopState | null): string {
 	if (!state) return "No post-review-loop state.";
 	return compactStatusMarkdown(state);
 }
 
-function compactStatusMarkdown(state: LoopState | null): string {
+function compactStatusMarkdown(state: LoopState | null, options: { currentFingerprint?: WorktreeFingerprint } = {}): string {
 	if (!state) return "No post-review-loop state.";
 	const currentBucketI = currentBucketIItems(state.bucketI);
 	const actionableBucketI = currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining");
@@ -248,6 +272,10 @@ function compactStatusMarkdown(state: LoopState | null): string {
 		"## Recent Failed Validation",
 		"",
 		failedValidation.length ? failedValidation.map((item) => `- ${compactText(item.command)} — ${compactText(item.notes)}`).join("\n") : "- none",
+		"",
+		"## Reusable Evidence",
+		"",
+		renderReusableEvidenceForStatus(state, options.currentFingerprint),
 	]
 		.filter((part): part is string => Boolean(part))
 		.join("\n");
@@ -259,8 +287,8 @@ function fullStatusMarkdown(state: LoopState | null): string {
 	return renderCurrentReport(state, { full: true });
 }
 
-function statusMarkdown(state: LoopState | null, options: { full?: boolean } = {}): string {
-	return options.full ? fullStatusMarkdown(state) : compactStatusMarkdown(state);
+function statusMarkdown(state: LoopState | null, options: { full?: boolean; currentFingerprint?: WorktreeFingerprint } = {}): string {
+	return options.full ? fullStatusMarkdown(state) : compactStatusMarkdown(state, options);
 }
 
 function requiredNextAction(state: LoopState): string {
@@ -382,9 +410,17 @@ function normalizeBucketIStatus(value: string): BucketIStatus {
 	throw new Error(`Invalid Bucket I status "${value}". Allowed: "candidate", "accepted", "applied", "rejected", "remaining", "downgraded".`);
 }
 
+function normalizeValidationSource(value: unknown): "fresh" | "reused" | undefined {
+	if (value === undefined) return undefined;
+	const cleanValue = compactText(String(value)).toLowerCase();
+	if (cleanValue === "fresh" || cleanValue === "reused") return cleanValue;
+	throw new Error(`Invalid validation source "${String(value)}". Allowed: "fresh", "reused".`);
+}
+
 function normalizePhaseResult(params: PhaseResult): PhaseResult {
 	return {
 		...params,
+		validation: params.validation.map((item) => ({ ...item, source: normalizeValidationSource(item.source) })),
 		bucketI: params.bucketI.map((item) => ({ ...item, status: normalizeBucketIStatus(String(item.status)) })),
 		bucketII: params.bucketII.map((item) => ({ ...item, status: normalizeBucketIIStatus(String(item.status)) })),
 	};
@@ -421,9 +457,9 @@ function startLoop(pi: ExtensionAPI, ctx: ExtensionContext, scope: string, optio
 	return state;
 }
 
-function sendPhasePrompt(pi: ExtensionAPI, state: LoopState): void {
+function sendPhasePrompt(pi: ExtensionAPI, ctx: ExtensionContext, state: LoopState): void {
 	if (state.phase === "final-report") return;
-	pi.sendUserMessage(phasePrompt(state, state.phase), { deliverAs: "followUp" });
+	pi.sendUserMessage(phasePrompt(state, state.phase, { currentFingerprint: currentFingerprintForState(ctx, state) }), { deliverAs: "followUp" });
 }
 
 function registerCommand(pi: ExtensionAPI, name: string): void {
@@ -440,7 +476,8 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			const restText = rest.join(" ");
 
 			if (subcommand === "status") {
-				showMarkdownMessage(pi, "Post-review-loop status", statusMarkdown(runtime.state, { full: rest.includes("--full") }));
+				const state = runtime.state;
+				showMarkdownMessage(pi, "Post-review-loop status", statusMarkdown(state, { full: rest.includes("--full"), currentFingerprint: currentFingerprintForState(ctx, state) }));
 				return;
 			}
 
@@ -471,7 +508,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				}
 				persist(pi, ctx, "resumed");
 				notify(ctx, "Post-review-loop resumed.", "info");
-				pi.sendUserMessage(resumePrompt(state), { deliverAs: "followUp" });
+				pi.sendUserMessage(resumePrompt(state, { currentFingerprint: currentFingerprintForState(ctx, state) }), { deliverAs: "followUp" });
 				return;
 			}
 
@@ -502,7 +539,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
 				const state = startLoop(pi, ctx, scope, { limit: parsed.limit, reviewOnly: parsed.reviewOnly, gitCheckpoint: parsed.gitCheckpoint });
 				notify(ctx, `Post-review-loop started: ${compactText(state.scope)}`, "info");
-				sendPhasePrompt(pi, state);
+				sendPhasePrompt(pi, ctx, state);
 				return;
 			}
 
@@ -522,9 +559,10 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		promptSnippet: "Inspect the current post-review-loop phase, iteration, ledger, and required next action.",
 		promptGuidelines: ["Use when unsure which post-review-loop phase is active.", "Do not continue a different phase than the state reports."],
 		parameters: Type.Object({}),
-		async execute() {
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const state = runtime.state;
-			return textToolResult(statusMarkdown(state), compactToolDetails(state));
+			const currentFingerprint = currentFingerprintForState(ctx, state);
+			return textToolResult(statusMarkdown(state, { currentFingerprint }), compactToolDetails(state, { currentFingerprint }));
 		},
 		renderResult(result) {
 			const text = result.content.find((item) => item.type === "text")?.text ?? "";
@@ -550,7 +588,17 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params: PhaseResult, _signal, _onUpdate, ctx) {
 			try {
 				const normalized = normalizePhaseResult(params);
-				const { state, gate } = runtime.submit(normalized);
+				const priorState = runtime.state;
+				const cacheFiles = priorState
+					? unique([
+							...fingerprintFiles(priorState),
+							...normalized.changedFiles,
+							...normalized.codeChanges.flatMap((item) => item.files),
+							...normalized.bucketI.flatMap((item) => item.files),
+						])
+					: [];
+				const fingerprint = computeWorktreeFingerprint(ctx.cwd, cacheFiles);
+				const { state, gate } = runtime.submit(normalized, fingerprint ? { cwd: ctx.cwd, fingerprint } : undefined);
 				persist(pi, ctx, "phase-submitted");
 				if (gate.decision === "stop") {
 					const report = completeWithReport(pi, ctx, "final-report-rendered");

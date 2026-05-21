@@ -1,5 +1,8 @@
 import { execFileSync } from "node:child_process";
-import type { AfterReviewCommitState, BaselineState, CommitMessage, LoopState, ValidationResult } from "./types.js";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
+import type { AfterReviewCommitState, BaselineState, CommitMessage, LoopState, ValidationResult, WorktreeFingerprint } from "./types.js";
 
 const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
 const BEFORE_REVIEW_SUBJECT = "checkpoint(post-review-loop): before review";
@@ -11,9 +14,25 @@ function git(cwd: string, args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
+function gitRaw(cwd: string, args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+export function hashText(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
 function safeGit(cwd: string, args: string[]): string | undefined {
 	try {
 		return git(cwd, args);
+	} catch {
+		return undefined;
+	}
+}
+
+function safeGitRaw(cwd: string, args: string[]): string | undefined {
+	try {
+		return gitRaw(cwd, args);
 	} catch {
 		return undefined;
 	}
@@ -154,6 +173,67 @@ export function scopedFilesFromStatus(cwd: string): string[] {
 		.map((entry) => entry.slice(2).trim())
 		.filter(Boolean)
 		.map((entry) => entry.replace(/^"|"$/g, ""));
+}
+
+function untrackedFiles(cwd: string): string[] {
+	const output = safeGitRaw(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
+	if (!output) return [];
+	return output.split("\0").map(clean).filter(Boolean).sort();
+}
+
+function safeRepoPath(cwd: string, file: string): string | undefined {
+	const cleanFile = file.trim().replace(/^"|"$/g, "");
+	if (!cleanFile || cleanFile.includes("\0")) return undefined;
+	const absolute = resolve(cwd, cleanFile);
+	const rel = relative(cwd, absolute);
+	if (!rel || rel === "." || rel.startsWith("..") || rel.split(/[\\/]/).includes("..")) return undefined;
+	return rel.replace(/\\/g, "/");
+}
+
+function hashFile(cwd: string, file: string): string | null {
+	const absolute = resolve(cwd, file);
+	if (!existsSync(absolute)) return null;
+	const stat = lstatSync(absolute);
+	if (!stat.isFile()) return null;
+	return createHash("sha256").update(readFileSync(absolute)).digest("hex");
+}
+
+function fileHashMap(cwd: string, files: string[]): Record<string, string | null> {
+	const hashes: Record<string, string | null> = {};
+	for (const file of unique(files).map((item) => safeRepoPath(cwd, item)).filter((item): item is string => Boolean(item)).sort()) {
+		hashes[file] = hashFile(cwd, file);
+	}
+	return hashes;
+}
+
+export function computeWorktreeFingerprint(cwd: string, files: string[] = []): WorktreeFingerprint | undefined {
+	const inside = safeGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
+	if (inside !== "true") return undefined;
+
+	const head = safeGit(cwd, ["rev-parse", "HEAD"]) ?? "unknown";
+	const stagedDiff = safeGitRaw(cwd, ["diff", "--cached", "--binary", "--"]) ?? "";
+	const unstagedDiff = safeGitRaw(cwd, ["diff", "--binary", "--"]) ?? "";
+	const status = safeGitRaw(cwd, ["status", "--porcelain=v1", "-uall"]) ?? "";
+	const untracked = untrackedFiles(cwd);
+	const untrackedHashes = untracked.map((file) => [file, hashFile(cwd, file)] as const);
+	const fileHashes = fileHashMap(cwd, files);
+	const stagedDiffHash = hashText(stagedDiff);
+	const unstagedDiffHash = hashText(unstagedDiff);
+	const untrackedHash = hashText(JSON.stringify(untrackedHashes));
+	const statusHash = hashText(status);
+	const overallHash = hashText(JSON.stringify({ head, stagedDiffHash, unstagedDiffHash, untrackedHash, statusHash }));
+	return {
+		algorithm: "sha256",
+		at: Date.now(),
+		head,
+		stagedDiffHash,
+		unstagedDiffHash,
+		untrackedHash,
+		untrackedFiles: untracked,
+		statusHash,
+		overallHash,
+		fileHashes,
+	};
 }
 
 export function establishBaseline(cwd: string, scope: string, options: BaselineOptions = { checkpoint: true }): BaselineState {

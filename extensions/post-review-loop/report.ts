@@ -78,7 +78,7 @@ function escapeTable(value: string): string {
 }
 
 function validationKey(record: ValidationResult): string {
-	return `${record.command}\u0000${record.result}`;
+	return `${record.command}\u0000${record.result}\u0000${record.source ?? "fresh"}`;
 }
 
 function groupedValidation(records: ValidationResult[]): Array<ValidationResult & { count: number; phases: string[] }> {
@@ -100,15 +100,15 @@ function groupedValidation(records: ValidationResult[]): Array<ValidationResult 
 
 function renderValidationSummary(records: ValidationResult[]): string {
 	if (!records.length) return "No validation commands were recorded.";
-	const rows = ["| Command | Result | Count | Latest note |", "| --- | --- | ---: | --- |"];
-	for (const record of groupedValidation(records)) rows.push(`| ${escapeTable(record.command)} | ${record.result} | ${record.count} | ${escapeTable(record.notes)} |`);
+	const rows = ["| Command | Result | Source | Count | Latest note |", "| --- | --- | --- | ---: | --- |"];
+	for (const record of groupedValidation(records)) rows.push(`| ${escapeTable(record.command)} | ${record.result} | ${record.source ?? "fresh"} | ${record.count} | ${escapeTable(record.notes)} |`);
 	return rows.join("\n");
 }
 
 function renderValidationFull(records: ValidationResult[]): string {
 	if (!records.length) return "No validation commands were recorded.";
-	const rows = ["| Command | Result | Phase | Notes |", "| --- | --- | --- | --- |"];
-	for (const record of records) rows.push(`| ${escapeTable(record.command)} | ${record.result} | ${record.phase} | ${escapeTable(record.notes)} |`);
+	const rows = ["| Command | Result | Source | Phase | Notes |", "| --- | --- | --- | --- | --- |"];
+	for (const record of records) rows.push(`| ${escapeTable(record.command)} | ${record.result} | ${record.source ?? "fresh"} | ${record.phase} | ${escapeTable(record.notes)} |`);
 	return rows.join("\n");
 }
 
