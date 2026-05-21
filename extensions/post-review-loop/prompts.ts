@@ -5,8 +5,14 @@ function line(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
 
+function promptLine(value: string, maxChars = 220): string {
+	const cleaned = line(value);
+	if (cleaned.length <= maxChars) return cleaned;
+	return `${cleaned.slice(0, maxChars).trimEnd()}… [truncated ${cleaned.length - maxChars} chars]`;
+}
+
 function inlineList(values: string[], empty = "none", limit = 5): string {
-	const cleaned = values.map(line).filter(Boolean);
+	const cleaned = values.map((value) => promptLine(value, 160)).filter(Boolean);
 	if (!cleaned.length) return empty;
 	const shown = cleaned.slice(0, limit).join(", ");
 	const remaining = cleaned.length - limit;
@@ -16,7 +22,7 @@ function inlineList(values: string[], empty = "none", limit = 5): string {
 function bucketILines(items: BucketIItem[]): string {
 	if (!items.length) return "- none";
 	return items
-		.map((item) => `- [${item.status}] ${line(item.title)} — ${line(item.fix)} (${inlineList(item.files)})`)
+		.map((item) => `- [${item.status}] ${promptLine(item.title)} — ${promptLine(item.fix, 260)} (${inlineList(item.files)})`)
 		.join("\n");
 }
 
@@ -30,8 +36,8 @@ function bucketIILines(items: BucketIIItem[]): string {
 	if (!items.length) return "- none";
 	return items
 		.map((item) => {
-			const suffix = isUnresolvedBucketII(item) ? ` — recommended: ${line(item.recommendedAction)}` : "";
-			return `- [${item.status}] ${line(item.title)}${suffix}`;
+			const suffix = isUnresolvedBucketII(item) ? ` — recommended: ${promptLine(item.recommendedAction, 260)}` : "";
+			return `- [${item.status}] ${promptLine(item.title)}${suffix}`;
 		})
 		.join("\n");
 }
@@ -40,7 +46,7 @@ function validationLines(records: ValidationResult[]): string {
 	if (!records.length) return "- none";
 	const failures = records.filter((record) => record.result === "failed");
 	const shown = failures.length ? failures.slice(-3) : records.slice(-3);
-	return shown.map((record) => `- [${record.result}${record.source === "reused" ? ", reused" : ""}] ${record.phase}: ${line(record.command)} — ${line(record.notes)}`).join("\n");
+	return shown.map((record) => `- [${record.result}${record.source === "reused" ? ", reused" : ""}] ${record.phase}: ${promptLine(record.command, 220)} — ${promptLine(record.notes, 260)}`).join("\n");
 }
 
 function shortHash(value: string | undefined): string {
@@ -69,7 +75,7 @@ function renderReusableValidation(state: LoopState, current?: WorktreeFingerprin
 	return entries
 		.map((entry) => {
 			const scope = entry.inputKind === "files" ? inlineList(entry.relevantFiles, "tracked files", 4) : "full worktree fingerprint";
-			return `- [${entry.result}] ${line(entry.command)} — input unchanged for ${scope}; previous note: ${line(entry.notes)}`;
+			return `- [${entry.result}] ${promptLine(entry.command, 220)} — input unchanged for ${scope}; previous note: ${promptLine(entry.notes, 260)}`;
 		})
 		.join("\n");
 }
@@ -129,7 +135,7 @@ export function renderLedgerSummary(state: LoopState): string {
 	const actionableBucketI = currentBucketI.filter(isActionableBucketI);
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
-	return `Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none yet"}
+	return `Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${promptLine(state.lastGate.reason, 260)}` : "none yet"}
 Files in phase scope: ${state.filesChanged.length} total (${inlineList(state.filesChanged)})
 Baseline files: ${state.baseline.scopedFiles.length} total (${inlineList(state.baseline.scopedFiles)})
 
@@ -149,10 +155,10 @@ ${rejectedLines(state.rejectedOrKeptAsIs)}`;
 function commonHeader(state: LoopState, phase: Phase, currentFingerprint?: WorktreeFingerprint): string {
 	return `Post-review-loop active. Follow the reported phase exactly.
 
-Scope: ${line(state.scope)}
+Scope: ${promptLine(state.scope, 600)}
 Phase: ${phase}
 Iteration: ${state.iteration}/${state.limit}
-Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${line(state.lastGate.reason)}` : "none yet"}
+Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${promptLine(state.lastGate.reason, 260)}` : "none yet"}
 Checkpoint: ${state.lifecycle}
 Current fingerprint: ${currentFingerprint ? shortHash(currentFingerprint.overallHash) : "unavailable; inspect normally"}
 

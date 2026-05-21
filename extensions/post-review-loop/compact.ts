@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { computeWorktreeFingerprint } from "./git.js";
-import { phasePrompt, renderLedgerSummary } from "./prompts.js";
+import { phasePrompt } from "./prompts.js";
 import type { LoopState } from "./types.js";
 
 type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
@@ -23,9 +23,10 @@ function clean(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
 
-function formatList(items: string[]): string {
-	const cleaned = items.map(clean).filter(Boolean);
-	return cleaned.length ? cleaned.map((item) => `- ${item}`).join("\n") : "- none";
+function truncate(value: string, maxChars: number): string {
+	const cleaned = clean(value);
+	if (cleaned.length <= maxChars) return cleaned;
+	return `${cleaned.slice(0, maxChars).trimEnd()}… [truncated ${cleaned.length - maxChars} chars]`;
 }
 
 function unique(values: string[]): string[] {
@@ -47,37 +48,21 @@ function lastPhaseSummary(state: LoopState): string {
 }
 
 export function buildCompactionInstructions(state: LoopState): string {
-	return `Preserve only the post-review-loop handoff needed to continue after compaction.
+	return `Create a minimal checkpoint summary for the post-review-loop.
 
-Keep:
-- loop id ${state.id}
-- scope: ${state.scope}
+Important token rule: do not copy the post-review-loop ledger, Bucket details, validation rows, file hashes, cache JSON, previous phase prompts, or tool schemas into the compaction summary. The extension persists the canonical ledger outside model context and will inject the authoritative next phase prompt immediately after compaction.
+
+Keep only this handoff:
+- post-review-loop checkpoint completed
+- loop id: ${state.id}
+- scope: ${truncate(state.scope, 500)}
 - next phase: ${state.phase}
 - iteration: ${state.iteration}/${state.limit}
-- last completed phase summary: ${lastPhaseSummary(state)}
-- files reviewed / in submitted phase scope
-- phase worktree fingerprints and file hashes for reusable inspection evidence
-- validation cache entries with command, input hash, and fresh/reused source
-- Bucket I findings applied, accepted, remaining, rejected, or downgraded
-- Bucket II decision items and recommended actions
-- rejected or kept-as-is findings and why
-- concise next-step instructions
+- last completed phase summary: ${truncate(lastPhaseSummary(state), 500)}
+- last gate: ${state.lastGate ? `${state.lastGate.decision}: ${truncate(state.lastGate.reason, 300)}` : "none"}
+- if uncertain after compaction, call post_review_loop_get_state and follow the next extension-injected phase prompt
 
-Drop verbose raw tool output, stale alternatives, repeated reasoning, and implementation details not needed for the next phase.
-
-Files reviewed / in submitted phase scope:
-${formatList(state.filesChanged)}
-
-Persisted ledger summary:
-${renderLedgerSummary(state)}
-
-Phase evidence cache:
-${JSON.stringify((state.phaseCaches ?? []).slice(-3), null, 2)}
-
-Validation cache:
-${JSON.stringify((state.validationCache ?? []).slice(-8), null, 2)}
-
-Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${state.lastGate.reason}` : "none"}`;
+Drop verbose raw tool output, stale alternatives, repeated reasoning, implementation details not needed for the next phase, and all duplicate ledger/cache text.`;
 }
 
 function getErrorMessage(error: unknown): string {
