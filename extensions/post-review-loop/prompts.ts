@@ -49,6 +49,46 @@ function validationLines(records: ValidationResult[]): string {
 	return shown.map((record) => `- [${record.result}${record.source === "reused" ? ", reused" : ""}] ${record.phase}: ${promptLine(record.command, 220)} — ${promptLine(record.notes, 260)}`).join("\n");
 }
 
+const BUCKET_I_PROMPT_BATCH_LIMIT = 8;
+const BUCKET_II_PROMPT_BATCH_LIMIT = 6;
+
+type BucketIBatch = {
+	active: BucketIItem[];
+	relevant: BucketIItem[];
+	shown: BucketIItem[];
+};
+
+function bucketIRelevantToPhase(items: BucketIItem[], phase: Phase): BucketIItem[] {
+	if (phase === "impl") return items.filter((item) => item.status === "accepted" || item.status === "remaining");
+	if (phase === "impl-review") return items.filter((item) => item.status === "candidate" || item.status === "remaining");
+	return items;
+}
+
+function bucketIBatchForPhase(items: BucketIItem[], phase: Phase): BucketIBatch {
+	const active = items.filter(isActionableBucketI);
+	const relevant = bucketIRelevantToPhase(active, phase);
+	return { active, relevant, shown: relevant.slice(0, BUCKET_I_PROMPT_BATCH_LIMIT) };
+}
+
+function bucketIBatchOverflowLine(batch: BucketIBatch): string | undefined {
+	const hiddenRelevant = batch.relevant.length - batch.shown.length;
+	const hiddenOtherActive = batch.active.length - batch.relevant.length;
+	const parts = [hiddenRelevant > 0 ? `${hiddenRelevant} more relevant Bucket I item(s) remain queued outside this prompt batch` : undefined, hiddenOtherActive > 0 ? `${hiddenOtherActive} other active Bucket I item(s) remain queued for a later phase` : undefined].filter(Boolean);
+	return parts.length ? `- ${parts.join("; ")}. Do not mark hidden items resolved unless this phase inspected or changed them.` : undefined;
+}
+
+function bucketIStatusSummary(batch: BucketIBatch, phase: Phase, ledgerCount: number): string {
+	return `Bucket I actionable (${batch.active.length} active / ${ledgerCount} ledger entries; ${batch.relevant.length} relevant to ${phase}; showing ${batch.shown.length}):`;
+}
+
+function bucketIIBatchLines(items: BucketIIItem[]): string {
+	const shown = items.slice(0, BUCKET_II_PROMPT_BATCH_LIMIT);
+	const overflow = items.length - shown.length;
+	return [bucketIILines(shown), overflow > 0 ? `- ${overflow} more Bucket II item(s) remain queued outside this compact prompt. Use full status/report before deciding on hidden items.` : undefined]
+		.filter((part): part is string => Boolean(part))
+		.join("\n");
+}
+
 function shortHash(value: string | undefined): string {
 	return value ? value.slice(0, 12) : "unknown";
 }
@@ -130,21 +170,22 @@ function rejectedLines(items: RejectedItem[]): string {
 	return `Rejected/kept as-is (${titles.length}): ${inlineList(titles, "none", 8)}`;
 }
 
-export function renderLedgerSummary(state: LoopState): string {
+export function renderLedgerSummary(state: LoopState, phase: Phase = state.phase as Phase): string {
 	const currentBucketI = currentBucketIItems(state.bucketI);
-	const actionableBucketI = currentBucketI.filter(isActionableBucketI);
+	const bucketIBatch = bucketIBatchForPhase(currentBucketI, phase);
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
 	return `Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${promptLine(state.lastGate.reason, 260)}` : "none yet"}
 Files in phase scope: ${state.filesChanged.length} total (${inlineList(state.filesChanged)})
 Baseline files: ${state.baseline.scopedFiles.length} total (${inlineList(state.baseline.scopedFiles)})
 
-Bucket I actionable (${actionableBucketI.length}; ${currentBucketI.length} current / ${state.bucketI.length} ledger entries):
-${bucketILines(actionableBucketI)}
+${bucketIStatusSummary(bucketIBatch, phase, state.bucketI.length)}
+${bucketILines(bucketIBatch.shown)}
+${bucketIBatchOverflowLine(bucketIBatch) ?? ""}
 ${appliedBucketILines(currentBucketI)}
 
-Bucket II current (${unresolvedBucketII} unresolved / ${currentBucketII.length} current):
-${bucketIILines(currentBucketII)}
+Bucket II current (${unresolvedBucketII} unresolved / ${currentBucketII.length} current; showing ${Math.min(currentBucketII.length, BUCKET_II_PROMPT_BATCH_LIMIT)}):
+${bucketIIBatchLines(currentBucketII)}
 
 Recent validation (${state.validation.length} total; failures prioritized):
 ${validationLines(state.validation)}
@@ -163,7 +204,7 @@ Checkpoint: ${state.lifecycle}
 Current fingerprint: ${currentFingerprint ? shortHash(currentFingerprint.overallHash) : "unavailable; inspect normally"}
 
 Compact ledger:
-${renderLedgerSummary(state)}
+${renderLedgerSummary(state, phase)}
 
 ${reusableEvidenceSection(state, currentFingerprint)}`;
 }
@@ -194,6 +235,7 @@ function coreRules(state: LoopState): string {
 - Reject speculative polish, preferences, broad rewrites, and future-proofing.
 - Prefer integrated fixes over wrappers, compatibility layers, or bandages.
 - Batch closely related Bucket I work that shares files, modules, or state domains; do not checkpoint after only the first related item when the rest can be safely verified or fixed together.
+- If the compact ledger says active items are queued outside this prompt batch, work only on the shown relevant batch unless you explicitly inspect full status/report; hidden items remain active in the persisted ledger and must not be marked resolved by omission.
 - Submit only new/materially changed Bucket II items; reuse an existing title verbatim to update it.
 - End the phase by calling post_review_loop_submit_phase_result. Do not freehand the final report.${firstPhaseOnly}`;
 }

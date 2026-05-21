@@ -25,6 +25,7 @@ const pendingMarkdownMessages: PendingMarkdownMessage[] = [];
 let agentActive = false;
 const MARKDOWN_MESSAGE_TYPE = "post-review-loop-markdown";
 const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
+const COMPACT_STATUS_ITEM_LIMIT = 8;
 
 const PhaseSchema = Type.Union([Type.Literal("post-review"), Type.Literal("impl-review"), Type.Literal("impl")]);
 const ValidationStatusSchema = Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]);
@@ -218,6 +219,19 @@ function compactStatusText(value: string, maxChars = 220): string {
 	return `${cleaned.slice(0, maxChars).trimEnd()}… [truncated ${cleaned.length - maxChars} chars]`;
 }
 
+function compactStatusItems<T>(items: T[], render: (item: T) => string, limit = COMPACT_STATUS_ITEM_LIMIT): string {
+	if (!items.length) return "- none";
+	const shown = items.slice(0, limit).map(render);
+	const hidden = items.length - shown.length;
+	return [...shown, hidden > 0 ? `- ${hidden} more item(s) remain queued; use full status/report for details.` : undefined].filter((item): item is string => Boolean(item)).join("\n");
+}
+
+function compactStatusArray(values: string[], limit = COMPACT_STATUS_ITEM_LIMIT): string[] {
+	const shown = values.slice(0, limit).map((value) => compactStatusText(value));
+	const hidden = values.length - shown.length;
+	return hidden > 0 ? [...shown, `${hidden} more item(s) remain queued; use full status/report for details.`] : shown;
+}
+
 function unique(values: string[]): string[] {
 	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
@@ -269,15 +283,15 @@ function compactStatusMarkdown(state: LoopState | null, options: { currentFinger
 		"",
 		"## Actionable Bucket I",
 		"",
-		actionableBucketI.length ? actionableBucketI.map((item) => `- [${item.status}] ${compactStatusText(item.title)}`).join("\n") : "- none",
+		compactStatusItems(actionableBucketI, (item) => `- [${item.status}] ${compactStatusText(item.title)}`),
 		"",
 		"## Unresolved Bucket II",
 		"",
-		unresolvedBucketII.length ? unresolvedBucketII.map((item) => `- [${item.status}] ${compactStatusText(item.title)}`).join("\n") : "- none",
+		compactStatusItems(unresolvedBucketII, (item) => `- [${item.status}] ${compactStatusText(item.title)}`),
 		"",
 		"## Recent Failed Validation",
 		"",
-		failedValidation.length ? failedValidation.map((item) => `- ${compactStatusText(item.command)} — ${compactStatusText(item.notes, 260)}`).join("\n") : "- none",
+		compactStatusItems(failedValidation, (item) => `- ${compactStatusText(item.command)} — ${compactStatusText(item.notes, 260)}`, 3),
 		"",
 		"## Reusable Evidence",
 		"",
@@ -316,10 +330,10 @@ function compactToolDetails(state: LoopState | null, extra: Record<string, unkno
 			iteration: state.iteration,
 			limit: state.limit,
 			lastGate: state.lastGate ? { decision: state.lastGate.decision, reason: compactStatusText(state.lastGate.reason, 260) } : undefined,
-			actionableBucketI: currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining").map((item) => compactStatusText(item.title)),
-			unresolvedBucketII: currentBucketII
-				.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now")
-				.map((item) => compactStatusText(item.title)),
+			actionableBucketI: compactStatusArray(currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining").map((item) => item.title)),
+			unresolvedBucketII: compactStatusArray(
+				currentBucketII.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now").map((item) => item.title),
+			),
 			failedValidation: state.validation
 				.filter((item) => item.result === "failed")
 				.slice(-3)

@@ -5,6 +5,7 @@
     "highlight.svelte": "^0.1.3"
   },
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": ["./extensions"],
+    "prompts": ["./prompts"]
   }
 }

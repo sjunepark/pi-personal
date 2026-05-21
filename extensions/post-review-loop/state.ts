@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { basename } from "node:path";
 import { decideNext } from "./gate.js";
-import { countCurrentUnresolvedBucketII, mergeBucketIIItems } from "./ledger.js";
+import { countCurrentUnresolvedBucketII, currentBucketIItems, isActionableBucketI, mergeBucketIIItems } from "./ledger.js";
 import { defaultAfterReviewCommit, hashText, normalizeAfterReviewCommit } from "./git.js";
 import type {
 	AfterReviewCommitState,
@@ -86,8 +86,9 @@ function normalizeLimit(limit: number | undefined): number {
 }
 
 function countForPhase(state: LoopState, result: PhaseResult): GateSnapshot {
-	const bucketICandidates = result.bucketI.filter((item) => item.status === "candidate" || item.status === "remaining" || item.status === "accepted").length;
-	const acceptedBucketI = result.bucketI.filter((item) => item.status === "accepted" || item.status === "remaining").length;
+	const currentBucketI = currentBucketIItems([...state.bucketI, ...result.bucketI]);
+	const bucketICandidates = currentBucketI.filter(isActionableBucketI).length;
+	const acceptedBucketI = currentBucketI.filter((item) => item.status === "accepted" || item.status === "remaining").length;
 	const appliedBucketI = result.bucketI.filter((item) => item.status === "applied").length || result.codeChanges.length;
 	const bucketII = countCurrentUnresolvedBucketII([...state.bucketII, ...result.bucketII]);
 	return {
