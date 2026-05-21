@@ -29,22 +29,22 @@ type CommandStep = {
 	result: ExecResult;
 };
 
-type PublishOutcome = {
+type PushOutcome = {
 	status: "succeeded" | "failed" | "cancelled" | "stale";
 	steps: CommandStep[];
 	message?: string;
 };
 
-type PublishSnapshot = {
+type PushSnapshot = {
 	head: ExecResult;
 	status: ExecResult;
 	diff: ExecResult;
 	untracked: string;
 };
 
-type PublishReview = {
-	target: PublishTarget;
-	snapshot: PublishSnapshot;
+type PushReview = {
+	target: PushTarget;
+	snapshot: PushSnapshot;
 	body: string;
 };
 
@@ -82,7 +82,7 @@ type ManagedStatusEntry = {
 	isScriptRun: boolean;
 };
 
-type PublishTarget = {
+type PushTarget = {
 	key: RepoKey;
 	label: string;
 	path: string;
@@ -325,11 +325,11 @@ async function inspectRepo(pi: ExtensionAPI, key: RepoKey, label: string, path: 
 	};
 }
 
-function hasInbound(state: SyncState): boolean {
+function hasRemoteChangesToPull(state: SyncState): boolean {
 	return Boolean(state.chezmoiRepo?.behind || state.piPersonalRepo?.behind);
 }
 
-function hasOutbound(state: SyncState): boolean {
+function hasLocalChangesToPush(state: SyncState): boolean {
 	return Boolean(
 		state.chezmoiRepo?.dirty ||
 			state.chezmoiRepo?.ahead ||
@@ -340,7 +340,7 @@ function hasOutbound(state: SyncState): boolean {
 }
 
 function hasPendingWork(state: SyncState): boolean {
-	return state.managedDrift || state.pendingScriptRuns || hasInbound(state) || hasOutbound(state);
+	return state.managedDrift || state.pendingScriptRuns || hasRemoteChangesToPull(state) || hasLocalChangesToPush(state);
 }
 
 async function inspectSyncState(pi: ExtensionAPI): Promise<SyncState> {
@@ -384,7 +384,7 @@ function repoSummary(repo: RepoState | undefined): string[] {
 }
 
 function renderSyncReview(state: SyncState): string {
-	const hasRemoteChanges = hasInbound(state);
+	const hasRemoteChanges = hasRemoteChangesToPull(state);
 	const hasLocalRepoChanges = Boolean(state.chezmoiRepo?.dirty || state.chezmoiRepo?.ahead || state.piPersonalRepo?.dirty || state.piPersonalRepo?.ahead);
 	const managedTargets = state.managedDrift ? parseManagedTargetPaths(state.managedStatus) : [];
 	const managedTargetLines = managedTargets.slice(0, 8).map((target) => `  - ${target}`);
@@ -408,8 +408,8 @@ function renderSyncReview(state: SyncState): string {
 			nextSteps.push("  - Inspect the exact difference first: `/pi-sync diff`.");
 		}
 		if (state.pendingScriptRuns) nextSteps.push("- Run `/pi-sync apply` to let chezmoi run and record the pending script action(s).");
-		if (hasRemoteChanges) nextSteps.push("- Pull remote updates into this machine: `/pi-sync sync`.");
-		if (hasLocalRepoChanges) nextSteps.push("- Publish reviewed local repo changes: `/pi-sync publish`.");
+		if (hasRemoteChanges) nextSteps.push("- Pull remote updates into this machine: `/pi-sync pull`.");
+		if (hasLocalRepoChanges) nextSteps.push("- Push reviewed local repo changes: `/pi-sync push`.");
 	}
 
 	return [
@@ -455,7 +455,7 @@ function renderSyncReview(state: SyncState): string {
 					...(state.piPersonalRepo?.dirty ? ["- Local pi-personal has uncommitted changes."] : []),
 					...(state.piPersonalRepo?.ahead ? [`- Local pi-personal has ${countLabel(state.piPersonalRepo.ahead, "commit")} not pushed.`] : []),
 				]
-			: ["- No local repo changes are waiting to be published."]),
+			: ["- No local repo changes are waiting to be pushed."]),
 		"",
 		"## Recommended next step",
 		...nextSteps,
@@ -485,8 +485,8 @@ async function refreshStatus(pi: ExtensionAPI, ctx: ExtensionContext, state?: Sy
 	}
 
 	const labels = [];
-	if (hasInbound(syncState)) labels.push("in");
-	if (hasOutbound(syncState)) labels.push("out");
+	if (hasRemoteChangesToPull(syncState)) labels.push("pull");
+	if (hasLocalChangesToPush(syncState)) labels.push("push");
 	if (syncState.managedDrift) labels.push("drift");
 	if (syncState.pendingScriptRuns) labels.push("apply");
 	ctx.ui.setStatus(STATUS_KEY, `pi sync ${labels.join("+")}`);
@@ -497,10 +497,10 @@ function usage(): string {
 		"# pi sync",
 		"",
 		"Main commands:",
-		"- `/pi-sync` or `/pi-sync review` — inspect inbound/outbound sync state",
-		"- `/pi-sync sync` — run inbound sync: `chezmoi update`, `pi update --extensions`, then offer `/reload`",
-		"- `/pi-sync publish` — review, commit, rebase, and push local changes after confirmation",
-		"- `/pi-sync publish chezmoi|pi-personal|all` — publish selected source(s)",
+		"- `/pi-sync` or `/pi-sync review` — inspect pull/push sync state",
+		"- `/pi-sync pull` or `/pi-sync sync` — pull remote updates: `chezmoi update`, `pi update --extensions`, then offer `/reload`",
+		"- `/pi-sync push` or `/pi-sync publish` — review, commit, rebase, and push local changes after confirmation",
+		"- `/pi-sync push chezmoi|pi-personal|all` — push selected source(s)",
 		"",
 		"Lower-level commands:",
 		"- `/pi-sync status` — show pending chezmoi target/source changes",
@@ -519,8 +519,8 @@ function parseManagedTargetPaths(status: string): string[] {
 	return managedFileTargets(status).map((path) => (path.startsWith("/") ? path : join(homedir(), path)));
 }
 
-function selectablePublishTargets(state: SyncState): PublishTarget[] {
-	const targets: PublishTarget[] = [];
+function selectablePushTargets(state: SyncState): PushTarget[] {
+	const targets: PushTarget[] = [];
 	if (state.chezmoiRepo && (state.chezmoiRepo.dirty || state.chezmoiRepo.ahead)) {
 		targets.push({ key: "chezmoi", label: "chezmoi source", path: state.chezmoiRepo.path, state: state.chezmoiRepo });
 	}
@@ -530,8 +530,8 @@ function selectablePublishTargets(state: SyncState): PublishTarget[] {
 	return targets;
 }
 
-function matchPublishTargets(scope: string | undefined, state: SyncState): PublishTarget[] {
-	const available = selectablePublishTargets(state);
+function matchPushTargets(scope: string | undefined, state: SyncState): PushTarget[] {
+	const available = selectablePushTargets(state);
 	if (!scope || scope === "all") return available;
 	if (scope === "chezmoi") return available.filter((target) => target.key === "chezmoi");
 	if (scope === "pi-personal" || scope === "personal" || scope === "package") return available.filter((target) => target.key === "pi-personal");
@@ -546,7 +546,7 @@ function readableStatus(status: string): string {
 	return status.replaceAll("\0", "\n").trim() || "clean";
 }
 
-function snapshotError(snapshot: PublishSnapshot): string | undefined {
+function snapshotError(snapshot: PushSnapshot): string | undefined {
 	if (snapshot.head.code !== 0) return "git rev-parse HEAD failed";
 	if (snapshot.status.code !== 0) return "git status failed";
 	if (snapshot.diff.code !== 0) return "git diff HEAD failed";
@@ -555,11 +555,11 @@ function snapshotError(snapshot: PublishSnapshot): string | undefined {
 	return undefined;
 }
 
-function snapshotKey(snapshot: PublishSnapshot): string {
+function snapshotKey(snapshot: PushSnapshot): string {
 	return JSON.stringify({ head: snapshot.head, status: snapshot.status, diff: snapshot.diff, untracked: snapshot.untracked });
 }
 
-function formatSnapshotSummary(snapshot: PublishSnapshot): string {
+function formatSnapshotSummary(snapshot: PushSnapshot): string {
 	return [
 		`- HEAD: ${snapshot.head.stdout.trim() || "unknown"}`,
 		`- status hash: ${hashText(snapshot.status.stdout)}`,
@@ -573,12 +573,12 @@ function formatSnapshotSummary(snapshot: PublishSnapshot): string {
 	].join("\n");
 }
 
-function formatSnapshotMismatch(target: PublishTarget, reviewed: PublishSnapshot, current: PublishSnapshot): string {
+function formatSnapshotMismatch(target: PushTarget, reviewed: PushSnapshot, current: PushSnapshot): string {
 	return truncateOutput(
 		[
-			`# Publish stopped: ${target.label} changed after review`,
+			`# Push stopped: ${target.label} changed after review`,
 			"",
-			"The repository state no longer matches the reviewed publish snapshot. Run `/pi-sync publish` again to review the latest changes before committing or pushing.",
+			"The repository state no longer matches the reviewed push snapshot. Run `/pi-sync push` again to review the latest changes before committing or pushing.",
 			"",
 			"## Reviewed snapshot",
 			formatSnapshotSummary(reviewed),
@@ -602,7 +602,7 @@ async function captureUntrackedSnapshot(pi: ExtensionAPI, path: string): Promise
 	return entries.join("\n");
 }
 
-async function capturePublishSnapshot(pi: ExtensionAPI, target: PublishTarget): Promise<PublishSnapshot> {
+async function capturePushSnapshot(pi: ExtensionAPI, target: PushTarget): Promise<PushSnapshot> {
 	const head = await runGit(pi, target.path, ["rev-parse", "HEAD"], 10_000);
 	const status = await runGit(pi, target.path, ["status", "--porcelain=v1", "-z"], 10_000);
 	const diff = await runGit(pi, target.path, ["diff", "--binary", "HEAD", "--"], 20_000);
@@ -610,8 +610,8 @@ async function capturePublishSnapshot(pi: ExtensionAPI, target: PublishTarget): 
 	return { head, status, diff, untracked };
 }
 
-async function renderPublishReview(pi: ExtensionAPI, target: PublishTarget): Promise<PublishReview> {
-	const snapshot = await capturePublishSnapshot(pi, target);
+async function renderPushReview(pi: ExtensionAPI, target: PushTarget): Promise<PushReview> {
+	const snapshot = await capturePushSnapshot(pi, target);
 	const status = await runGit(pi, target.path, ["status", "--short"], 10_000);
 	const diffStat = await runGit(pi, target.path, ["diff", "--stat", "HEAD", "--"], 10_000);
 	const log = target.state.ahead > 0 ? await runGit(pi, target.path, ["log", "--oneline", "@{upstream}..HEAD"], 10_000) : undefined;
@@ -651,14 +651,14 @@ async function maybeAddManagedChezmoiDrift(pi: ExtensionAPI, ctx: ExtensionConte
 	const ok = await confirm(
 		ctx,
 		"Add current target files to chezmoi source?",
-		`chezmoi-managed files differ from source. Run \`${commandLine(["add", ...targets])}\` before publishing chezmoi? Choose no if the source copy is actually the intended state.`,
+		`chezmoi-managed files differ from source. Run \`${commandLine(["add", ...targets])}\` before pushing chezmoi? Choose no if the source copy is actually the intended state.`,
 	);
 	if (!ok) return undefined;
 
 	return await runChezmoi(pi, ["add", ...targets], MUTATING_TIMEOUT_MS);
 }
 
-async function publishRepo(pi: ExtensionAPI, ctx: ExtensionContext, review: PublishReview): Promise<PublishOutcome> {
+async function pushRepo(pi: ExtensionAPI, ctx: ExtensionContext, review: PushReview): Promise<PushOutcome> {
 	const { target } = review;
 	const steps: CommandStep[] = [];
 	const latestState = await inspectRepo(pi, target.key, target.label, target.path);
@@ -668,13 +668,13 @@ async function publishRepo(pi: ExtensionAPI, ctx: ExtensionContext, review: Publ
 	if (latestState.dirty) {
 		const message = await input(ctx, `${target.label} commit message`, `Update ${target.label}`);
 		if (!message) {
-			return { status: "cancelled", steps, message: `${target.label} publish cancelled: missing commit message.` };
+			return { status: "cancelled", steps, message: `${target.label} push cancelled: missing commit message.` };
 		}
 
-		const currentSnapshot = await capturePublishSnapshot(pi, target);
+		const currentSnapshot = await capturePushSnapshot(pi, target);
 		if (snapshotKey(currentSnapshot) !== snapshotKey(review.snapshot)) {
-			sendOutput(pi, "pi sync publish stopped", formatSnapshotMismatch(target, review.snapshot, currentSnapshot));
-			return { status: "stale", steps, message: `${target.label} changed after review; publish stopped.` };
+			sendOutput(pi, "pi sync push stopped", formatSnapshotMismatch(target, review.snapshot, currentSnapshot));
+			return { status: "stale", steps, message: `${target.label} changed after review; push stopped.` };
 		}
 
 		const addArgs = ["add", "-A"];
@@ -690,10 +690,10 @@ async function publishRepo(pi: ExtensionAPI, ctx: ExtensionContext, review: Publ
 	}
 
 	if (!committedDirtyChanges) {
-		const currentSnapshot = await capturePublishSnapshot(pi, target);
+		const currentSnapshot = await capturePushSnapshot(pi, target);
 		if (snapshotKey(currentSnapshot) !== snapshotKey(review.snapshot)) {
-			sendOutput(pi, "pi sync publish stopped", formatSnapshotMismatch(target, review.snapshot, currentSnapshot));
-			return { status: "stale", steps, message: `${target.label} changed after review; publish stopped.` };
+			sendOutput(pi, "pi sync push stopped", formatSnapshotMismatch(target, review.snapshot, currentSnapshot));
+			return { status: "stale", steps, message: `${target.label} changed after review; push stopped.` };
 		}
 	}
 
@@ -713,9 +713,9 @@ async function publishRepo(pi: ExtensionAPI, ctx: ExtensionContext, review: Publ
 	return { status: push.code === 0 ? "succeeded" : "failed", steps };
 }
 
-async function runFullSync(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-	if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "syncing pi");
-	notify(ctx, "Syncing pi config and packages...", "info");
+async function runPull(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "pulling pi");
+	notify(ctx, "Pulling pi config and packages...", "info");
 
 	const steps: CommandStep[] = [];
 	const chezmoiUpdateArgs = ["update"];
@@ -729,15 +729,15 @@ async function runFullSync(pi: ExtensionAPI, ctx: ExtensionContext): Promise<voi
 	}
 
 	const failed = steps.find((step) => step.result.code !== 0);
-	sendOutput(pi, "pi sync", formatStepResults("pi sync", steps));
+	sendOutput(pi, "pi sync pull", formatStepResults("pi sync pull", steps));
 	await refreshStatus(pi, ctx);
 
 	if (failed) {
-		notify(ctx, `${failed.title} failed. See sync output.`, "error");
+		notify(ctx, `${failed.title} failed. See pull output.`, "error");
 		return;
 	}
 
-	notify(ctx, "pi sync complete.", "info");
+	notify(ctx, "pi pull complete.", "info");
 	if (ctx.hasUI && (await ctx.ui.confirm("Reload pi resources?", "Run /reload so pi picks up changed settings, context files, extensions, skills, prompts, and themes?"))) {
 		await ctx.reload();
 	}
@@ -750,15 +750,15 @@ async function runReview(pi: ExtensionAPI, ctx: ExtensionContext): Promise<SyncS
 	return state;
 }
 
-async function runPublish(pi: ExtensionAPI, ctx: ExtensionContext, scope?: string): Promise<void> {
+async function runPush(pi: ExtensionAPI, ctx: ExtensionContext, scope?: string): Promise<void> {
 	let state = await runReview(pi, ctx);
 	let selectedScope = scope;
 
 	if (!selectedScope && ctx.hasUI) {
 		const options = ["all", "chezmoi", "pi-personal", "cancel"];
-		const choice = await select(ctx, "Publish which local changes?", options);
+		const choice = await select(ctx, "Push which local changes?", options);
 		if (!choice || choice === "cancel") {
-			notify(ctx, "publish cancelled.", "warning");
+			notify(ctx, "push cancelled.", "warning");
 			return;
 		}
 		selectedScope = choice;
@@ -769,37 +769,37 @@ async function runPublish(pi: ExtensionAPI, ctx: ExtensionContext, scope?: strin
 		if (addResult) {
 			sendOutput(pi, "chezmoi add", formatChezmoiResult("chezmoi add", ["add", ...parseManagedTargetPaths(state.managedStatus)], addResult));
 			if (addResult.code !== 0) {
-				notify(ctx, "chezmoi add failed; publish stopped.", "error");
+				notify(ctx, "chezmoi add failed; push stopped.", "error");
 				return;
 			}
 			state = await inspectSyncState(pi);
 		}
 	}
 
-	const targets = matchPublishTargets(selectedScope, state);
+	const targets = matchPushTargets(selectedScope, state);
 	if (targets.length === 0) {
-		notify(ctx, "No publishable local changes found for that scope.", "info");
+		notify(ctx, "No local changes to push found for that scope.", "info");
 		return;
 	}
 
-	const reviews = await Promise.all(targets.map((target) => renderPublishReview(pi, target)));
+	const reviews = await Promise.all(targets.map((target) => renderPushReview(pi, target)));
 	const snapshotFailure = reviews.find((review) => snapshotError(review.snapshot));
 	if (snapshotFailure) {
-		notify(ctx, `${snapshotFailure.target.label} publish snapshot failed; publish stopped.`, "error");
+		notify(ctx, `${snapshotFailure.target.label} push snapshot failed; push stopped.`, "error");
 		return;
 	}
-	sendOutput(pi, "pi sync publish review", ["# Publish review", "", ...reviews.map((review) => review.body)].join("\n"));
+	sendOutput(pi, "pi sync push review", ["# Push review", "", ...reviews.map((review) => review.body)].join("\n"));
 
-	const ok = await confirm(ctx, "Publish local pi changes?", `Commit/rebase/push ${targets.map((target) => target.label).join(" and ")}? Review the publish diff before confirming.`);
+	const ok = await confirm(ctx, "Push local pi changes?", `Commit/rebase/push ${targets.map((target) => target.label).join(" and ")}? Review the push diff before confirming.`);
 	if (!ok) {
-		notify(ctx, "publish cancelled.", "warning");
+		notify(ctx, "push cancelled.", "warning");
 		return;
 	}
 
 	const steps: CommandStep[] = [];
-	let stopped: PublishOutcome | undefined;
+	let stopped: PushOutcome | undefined;
 	for (const review of reviews) {
-		const outcome = await publishRepo(pi, ctx, review);
+		const outcome = await pushRepo(pi, ctx, review);
 		steps.push(...outcome.steps);
 		if (outcome.status !== "succeeded") {
 			stopped = outcome;
@@ -807,22 +807,22 @@ async function runPublish(pi: ExtensionAPI, ctx: ExtensionContext, scope?: strin
 		}
 	}
 
-	if (steps.length > 0) sendOutput(pi, "pi sync publish", formatStepResults("pi sync publish", steps));
+	if (steps.length > 0) sendOutput(pi, "pi sync push", formatStepResults("pi sync push", steps));
 
 	if (stopped?.status === "cancelled" || stopped?.status === "stale") {
-		notify(ctx, stopped.message || "publish cancelled.", "warning");
+		notify(ctx, stopped.message || "push cancelled.", "warning");
 		await refreshStatus(pi, ctx);
 		return;
 	}
 
 	const failed = steps.find((step) => step.result.code !== 0);
 	if (stopped?.status === "failed" || failed) {
-		notify(ctx, failed ? `${failed.title} failed. Resolve manually, then run /pi-sync review.` : stopped?.message || "publish failed. Run /pi-sync review.", "error");
+		notify(ctx, failed ? `${failed.title} failed. Resolve manually, then run /pi-sync review.` : stopped?.message || "push failed. Run /pi-sync review.", "error");
 		await refreshStatus(pi, ctx);
 		return;
 	}
 
-	notify(ctx, "publish complete.", "info");
+	notify(ctx, "push complete.", "info");
 	await refreshStatus(pi, ctx);
 }
 
@@ -832,15 +832,15 @@ async function handleStartup(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 	if (!ctx.hasUI || !hasPendingWork(state)) return;
 
 	const options = ["Review now"];
-	if (hasInbound(state)) options.push("Sync inbound now");
-	if (hasOutbound(state)) options.push("Publish outbound now");
+	if (hasRemoteChangesToPull(state)) options.push("Pull remote updates now");
+	if (hasLocalChangesToPush(state)) options.push("Push local changes now");
 	options.push("Later");
 
 	const choice = await select(
 		ctx,
 		`pi sync has pending work: ${[
-			hasInbound(state) ? "inbound" : undefined,
-			hasOutbound(state) ? "outbound" : undefined,
+			hasRemoteChangesToPull(state) ? "remote updates to pull" : undefined,
+			hasLocalChangesToPush(state) ? "local changes to push" : undefined,
 			state.managedDrift ? "managed-file drift" : undefined,
 			state.pendingScriptRuns ? "apply-time scripts" : undefined,
 		]
@@ -850,13 +850,13 @@ async function handleStartup(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 	);
 
 	if (choice === "Review now") await runReview(pi, ctx);
-	if (choice === "Sync inbound now") await runFullSync(pi, ctx);
-	if (choice === "Publish outbound now") await runPublish(pi, ctx, "all");
+	if (choice === "Pull remote updates now") await runPull(pi, ctx);
+	if (choice === "Push local changes now") await runPush(pi, ctx, "all");
 }
 
 function registerSyncCommand(pi: ExtensionAPI): void {
 	pi.registerCommand(COMMAND_NAME, {
-		description: "Review, sync, and publish pi config/resources through chezmoi and pi package git repos",
+		description: "Review, pull, and push pi config/resources through chezmoi and pi package git repos",
 		handler: async (rawArgs, ctx) => {
 			if (!(await hasChezmoi(pi))) {
 				notify(ctx, "chezmoi is not installed or not on PATH.", "error");
@@ -879,18 +879,18 @@ function registerSyncCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			if (parsed.action === "sync") {
-				const ok = await confirm(ctx, "Sync pi config and packages?", "Run `chezmoi update`, then `pi update --extensions`, then offer to reload pi resources?");
+			if (parsed.action === "pull" || parsed.action === "sync") {
+				const ok = await confirm(ctx, "Pull pi config and packages?", "Run `chezmoi update`, then `pi update --extensions`, then offer to reload pi resources?");
 				if (!ok) {
-					notify(ctx, "pi sync cancelled.", "warning");
+					notify(ctx, "pi pull cancelled.", "warning");
 					return;
 				}
-				await runFullSync(pi, ctx);
+				await runPull(pi, ctx);
 				return;
 			}
 
-			if (parsed.action === "publish") {
-				await runPublish(pi, ctx, parsed.args[0]?.toLowerCase());
+			if (parsed.action === "push" || parsed.action === "publish") {
+				await runPush(pi, ctx, parsed.args[0]?.toLowerCase());
 				return;
 			}
 
