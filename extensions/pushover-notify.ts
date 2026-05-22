@@ -5,6 +5,8 @@ const DEFAULT_TITLE = "Pi finished";
 const DEFAULT_MESSAGE = "Ready for your next prompt";
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_DEBOUNCE_MS = 3000;
+const CMUX_TIMEOUT_MS = 3000;
+const PUSHOVER_TITLE_MAX_LENGTH = 250;
 
 type PushoverConfig = {
 	token?: string;
@@ -70,6 +72,24 @@ function formatDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`;
 }
 
+function parseCmuxWorkspaceName(treeOutput: string): string | undefined {
+	const match = treeOutput.match(/^.*\bworkspace\s+workspace:\d+\s+"([^"]+)".*$/m);
+	return match?.[1]?.trim() || undefined;
+}
+
+async function getCmuxWorkspaceName(pi: ExtensionAPI): Promise<string | undefined> {
+	const workspaceId = firstNonEmpty(process.env.CMUX_WORKSPACE_ID);
+	if (!workspaceId) return undefined;
+
+	const result = await pi.exec("cmux", ["tree", "--workspace", workspaceId], { timeout: CMUX_TIMEOUT_MS });
+	if (result.killed || result.code !== 0) return undefined;
+	return parseCmuxWorkspaceName(result.stdout);
+}
+
+function formatTitle(baseTitle: string, workspaceName?: string): string {
+	return trimSummary(workspaceName ? `${baseTitle} · ${workspaceName}` : baseTitle, PUSHOVER_TITLE_MAX_LENGTH);
+}
+
 function getLastAssistantMessage(messages: readonly unknown[]): AssistantLike | undefined {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index] as AssistantLike;
@@ -115,7 +135,7 @@ function completionMessage(messages: readonly unknown[], durationMs: number): { 
 
 	return {
 		title: DEFAULT_TITLE,
-		message: durationMs >= 1000 ? `${DEFAULT_MESSAGE} (${duration})` : DEFAULT_MESSAGE,
+		message: durationMs >= 1000 ? `${DEFAULT_MESSAGE} (took ${duration})` : DEFAULT_MESSAGE,
 	};
 }
 
@@ -186,7 +206,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 		if (durationMs < config.minDurationMs) return;
 
 		const completion = completionMessage(event.messages, durationMs);
-		const title = completion.title === DEFAULT_TITLE ? config.title : completion.title;
+		const baseTitle = completion.title === DEFAULT_TITLE ? config.title : completion.title;
+		const title = formatTitle(baseTitle, await getCmuxWorkspaceName(pi));
 		const notificationKey = `${title}\n${completion.message}`;
 		const now = Date.now();
 		if (notificationKey === lastNotificationKey && now - lastNotificationAt < config.debounceMs) return;
