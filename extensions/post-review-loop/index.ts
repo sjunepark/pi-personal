@@ -193,20 +193,32 @@ function queueMarkdownMessageAfterAgent(title: string, markdown: string): void {
 	pendingMarkdownMessages.push({ title, markdown });
 }
 
-function showMarkdownMessage(pi: ExtensionAPI, title: string, markdown: string): void {
+function showMarkdownMessage(pi: ExtensionAPI, ctx: ExtensionContext, title: string, markdown: string): void {
 	if (agentActive) {
 		queueMarkdownMessageAfterAgent(title, markdown);
+		return;
+	}
+	if (!ctx.isIdle()) {
+		sendMarkdownMessageWhenIdle(pi, ctx, { title, markdown });
 		return;
 	}
 	sendMarkdownMessage(pi, title, markdown);
 }
 
-function flushQueuedMarkdownMessagesAfterAgent(pi: ExtensionAPI): void {
+function sendMarkdownMessageWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, message: PendingMarkdownMessage): void {
+	setTimeout(() => {
+		if (!ctx.isIdle()) {
+			sendMarkdownMessageWhenIdle(pi, ctx, message);
+			return;
+		}
+		sendMarkdownMessage(pi, message.title, message.markdown);
+	}, 25);
+}
+
+function flushQueuedMarkdownMessagesAfterAgent(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	const messages = pendingMarkdownMessages.splice(0);
 	if (!messages.length) return;
-	setTimeout(() => {
-		for (const message of messages) sendMarkdownMessage(pi, message.title, message.markdown);
-	}, 0);
+	for (const message of messages) sendMarkdownMessageWhenIdle(pi, ctx, message);
 }
 
 function compactText(value: string): string {
@@ -545,7 +557,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 
 			if (subcommand === "status") {
 				const state = runtime.state;
-				showMarkdownMessage(pi, "Post-review-loop status", statusMarkdown(state, { full: rest.includes("--full"), currentFingerprint: currentFingerprintForState(ctx, state) }));
+				showMarkdownMessage(pi, ctx, "Post-review-loop status", statusMarkdown(state, { full: rest.includes("--full"), currentFingerprint: currentFingerprintForState(ctx, state) }));
 				return;
 			}
 
@@ -586,7 +598,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			}
 
 			if (subcommand === "report") {
-				showMarkdownMessage(pi, "Post-review-loop report", renderReportOnly({ full: rest.includes("--full") }));
+				showMarkdownMessage(pi, ctx, "Post-review-loop report", renderReportOnly({ full: rest.includes("--full") }));
 				return;
 			}
 
@@ -598,7 +610,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				}
 				if (state.lifecycle === "complete") {
 					const report = completeWithReport(pi, ctx, "stopped");
-					showMarkdownMessage(pi, "Post-review-loop final report", report);
+					showMarkdownMessage(pi, ctx, "Post-review-loop final report", report);
 					return;
 				}
 				const requested = runtime.requestAfterCurrentIteration("stop");
@@ -780,7 +792,6 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 
 	pi.on("agent_end", (_event, ctx) => {
 		agentActive = false;
-		flushQueuedMarkdownMessagesAfterAgent(pi);
 		compactor.runAfterAgent(
 			pi,
 			ctx,
@@ -789,7 +800,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 					const ready = runtime.markCheckpointReady();
 					if (ready.lifecycle === "complete" || ready.phase === "final-report") {
 						const report = completeWithReport(pi, ctx, "stopped");
-						showMarkdownMessage(pi, "Post-review-loop final report", report);
+						showMarkdownMessage(pi, ctx, "Post-review-loop final report", report);
 						return runtime.state ?? ready;
 					}
 					return ready;
@@ -798,6 +809,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 			},
 			(event) => persist(pi, ctx, event),
 		);
+		flushQueuedMarkdownMessagesAfterAgent(pi, ctx);
 	});
 
 	pi.on("session_shutdown", () => {
