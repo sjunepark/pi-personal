@@ -10,7 +10,7 @@ import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import { phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
-import type { BucketIStatus, BucketIIStatus, LoopState, PhaseResult, WorktreeFingerprint } from "./types.js";
+import type { BucketIStatus, BucketIIStatus, ControlRequest, LoopState, PhaseResult, WorktreeFingerprint } from "./types.js";
 import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
@@ -232,6 +232,15 @@ function compactStatusArray(values: string[], limit = COMPACT_STATUS_ITEM_LIMIT)
 	return hidden > 0 ? [...shown, `${hidden} more item(s) remain queued; use full status/report for details.`] : shown;
 }
 
+function controlRequestText(request: ControlRequest | undefined): string | undefined {
+	if (!request) return undefined;
+	return `${request.action} after iteration ${request.afterIteration}`;
+}
+
+function pauseAfterCheckpoint(state: LoopState): boolean {
+	return state.lifecycle === "checkpointing" && state.phase === "post-review" && state.controlRequest?.action === "pause" && state.iteration > state.controlRequest.afterIteration;
+}
+
 function unique(values: string[]): string[] {
 	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
@@ -274,6 +283,7 @@ function compactStatusMarkdown(state: LoopState | null, options: { currentFinger
 		`- Iteration: ${state.iteration}/${state.limit}`,
 		`- Scope: ${compactStatusText(state.scope, 600)}`,
 		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${compactStatusText(state.lastGate.reason, 260)}` : "none"}`,
+		state.controlRequest ? `- Pending request: ${controlRequestText(state.controlRequest)}` : undefined,
 		compactor.pending ? "- Checkpoint: pending" : "- Checkpoint: none",
 		state.lastError ? `- Last error: ${compactStatusText(state.lastError, 260)}` : undefined,
 		"",
@@ -312,10 +322,11 @@ function statusMarkdown(state: LoopState | null, options: { full?: boolean; curr
 }
 
 function requiredNextAction(state: LoopState): string {
-	if (state.lifecycle === "checkpointing") return "Stop substantial work and wait for checkpoint compaction to finish.";
+	const control = controlRequestText(state.controlRequest);
+	if (state.lifecycle === "checkpointing") return control ? `Stop substantial work and wait for checkpoint compaction to finish; pending request: ${control}.` : "Stop substantial work and wait for checkpoint compaction to finish.";
 	if (state.lifecycle === "paused") return "Resume the loop before submitting another phase result.";
 	if (state.phase === "final-report") return "Render or inspect the final report.";
-	return `Complete ${state.phase} iteration ${state.iteration}, then call post_review_loop_submit_phase_result.`;
+	return `Complete ${state.phase} iteration ${state.iteration}, then call post_review_loop_submit_phase_result.${control ? ` Pending request: ${control}.` : ""}`;
 }
 
 function compactToolDetails(state: LoopState | null, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -330,6 +341,7 @@ function compactToolDetails(state: LoopState | null, extra: Record<string, unkno
 			iteration: state.iteration,
 			limit: state.limit,
 			lastGate: state.lastGate ? { decision: state.lastGate.decision, reason: compactStatusText(state.lastGate.reason, 260) } : undefined,
+			controlRequest: state.controlRequest,
 			actionableBucketI: compactStatusArray(currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining").map((item) => item.title)),
 			unresolvedBucketII: compactStatusArray(
 				currentBucketII.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now").map((item) => item.title),
@@ -513,13 +525,18 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			}
 
 			if (subcommand === "pause") {
-				const state = runtime.pause();
-				if (!state) {
-					notify(ctx, "No active post-review-loop to pause.", "warning");
+				const before = runtime.state;
+				if (before?.lifecycle === "paused") {
+					notify(ctx, "Post-review-loop is already paused.", "info");
 					return;
 				}
-				persist(pi, ctx, "paused");
-				notify(ctx, "Post-review-loop paused.", "info");
+				const state = runtime.requestAfterCurrentIteration("pause");
+				if (!state) {
+					notify(ctx, "No running post-review-loop to pause.", "warning");
+					return;
+				}
+				persist(pi, ctx, "pause-requested");
+				notify(ctx, `Post-review-loop will pause after iteration ${state.controlRequest?.afterIteration ?? state.iteration}.`, "info");
 				return;
 			}
 
@@ -546,9 +563,18 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 					notify(ctx, "No post-review-loop state to stop.", "warning");
 					return;
 				}
-				if (state.lifecycle !== "complete") runtime.abort("user stopped the loop");
-				const report = completeWithReport(pi, ctx, "stopped");
-				showMarkdownMessage(pi, "Post-review-loop final report", report);
+				if (state.lifecycle === "complete") {
+					const report = completeWithReport(pi, ctx, "stopped");
+					showMarkdownMessage(pi, "Post-review-loop final report", report);
+					return;
+				}
+				const requested = runtime.requestAfterCurrentIteration("stop");
+				if (!requested) {
+					notify(ctx, "No running post-review-loop to stop.", "warning");
+					return;
+				}
+				persist(pi, ctx, "stop-requested");
+				notify(ctx, `Post-review-loop will stop after iteration ${requested.controlRequest?.afterIteration ?? requested.iteration}.`, "info");
 				return;
 			}
 
@@ -632,15 +658,18 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 				const queued = compactor.queue(pi, ctx, state);
 				persist(pi, ctx, queued ? "checkpoint-queued" : "checkpoint-queue-rejected");
 				if (!queued) return textToolResult("A checkpoint is already pending. Stop substantial work and wait for the next phase prompt.", compactToolDetails(state, { gate }), true, true);
+				const willPause = pauseAfterCheckpoint(state);
 				return textToolResult(
-					`Phase result accepted. Gate decision: continue to ${gate.nextPhase}. Checkpoint compaction is queued; stop substantial work for this turn.`,
+					willPause
+						? "Phase result accepted. Current iteration completed; checkpoint compaction is queued and the loop will pause before the next phase prompt."
+						: `Phase result accepted. Gate decision: continue to ${gate.nextPhase}. Checkpoint compaction is queued; stop substantial work for this turn.`,
 					compactToolDetails(state, {
 						gate,
 						checkpointPending: true,
 						notify: {
 							suppressCompletion: true,
-							status: "Continuing",
-							logMessage: "Post-review-loop phase accepted; checkpoint compaction is queued",
+							status: willPause ? "Pausing" : "Continuing",
+							logMessage: willPause ? "Post-review-loop iteration accepted; checkpoint compaction is queued before pause" : "Post-review-loop phase accepted; checkpoint compaction is queued",
 						},
 					}),
 					false,
@@ -684,7 +713,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 			return;
 		}
 		if (state?.lifecycle === "active" && event.reason === "reload") {
-			runtime.pause();
+			runtime.pauseImmediately();
 			persist(pi, ctx, "reload-paused");
 			notify(ctx, "Post-review-loop paused after reload. Use /post-review-loop resume.", "info");
 			return;
@@ -715,7 +744,15 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 			pi,
 			ctx,
 			{
-				markReady: () => runtime.markCheckpointReady(),
+				markReady: () => {
+					const ready = runtime.markCheckpointReady();
+					if (ready.lifecycle === "complete" || ready.phase === "final-report") {
+						const report = completeWithReport(pi, ctx, "stopped");
+						showMarkdownMessage(pi, "Post-review-loop final report", report);
+						return runtime.state ?? ready;
+					}
+					return ready;
+				},
 				markFailed: (error) => runtime.markCheckpointFailed(error),
 			},
 			(event) => persist(pi, ctx, event),

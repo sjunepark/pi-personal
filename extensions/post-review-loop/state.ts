@@ -1,11 +1,12 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { basename } from "node:path";
-import { decideNext } from "./gate.js";
+import { decideNext, stopDecision } from "./gate.js";
 import { countCurrentUnresolvedBucketII, currentBucketIItems, isActionableBucketI, mergeBucketIIItems } from "./ledger.js";
 import { defaultAfterReviewCommit, hashText, normalizeAfterReviewCommit } from "./git.js";
 import type {
 	AfterReviewCommitState,
 	BaselineState,
+	ControlRequest,
 	GateDecision,
 	GateSnapshot,
 	LoopEntry,
@@ -68,7 +69,9 @@ const FULL_STATE_EVENTS = new Set([
 	"checkpoint-restored-paused",
 	"reload-paused",
 	"paused",
+	"pause-requested",
 	"resumed",
+	"stop-requested",
 	"stopped",
 	"final-report-rendered",
 	"aborted",
@@ -161,6 +164,26 @@ function phaseEvidenceCache(result: PhaseResult, fingerprint: WorktreeFingerprin
 	};
 }
 
+function checkpointHasReachedControlBoundary(state: LoopState, request: ControlRequest): boolean {
+	return state.phase === "post-review" && state.iteration > request.afterIteration;
+}
+
+function resultCompletesRequestedIteration(result: PhaseResult, gate: GateDecision, request: ControlRequest): boolean {
+	return gate.decision === "continue" && result.phase === "impl" && gate.nextPhase === "post-review" && result.iteration >= request.afterIteration;
+}
+
+function controlAfterIteration(state: LoopState): number {
+	if (state.lifecycle === "checkpointing" && state.phase === "post-review" && state.iteration > 1) return state.iteration - 1;
+	return state.iteration;
+}
+
+function controlRequest(action: ControlRequest["action"], state: LoopState): ControlRequest {
+	return {
+		action,
+		afterIteration: controlAfterIteration(state),
+	};
+}
+
 export class ReviewLoopRuntime {
 	#state: LoopState | null = null;
 
@@ -207,7 +230,7 @@ export class ReviewLoopRuntime {
 		return this.state!;
 	}
 
-	pause(): LoopState | null {
+	pauseImmediately(): LoopState | null {
 		if (!this.#state || this.#state.lifecycle !== "active") return null;
 		this.#state = { ...this.#state, lifecycle: "paused", updatedAt: now() };
 		return this.state;
@@ -225,6 +248,13 @@ export class ReviewLoopRuntime {
 		return previous;
 	}
 
+	requestAfterCurrentIteration(action: ControlRequest["action"]): LoopState | null {
+		if (!this.#state || this.#state.lifecycle === "complete" || this.#state.lifecycle === "failed") return null;
+		if (action === "pause" && this.#state.lifecycle === "paused") return this.state;
+		this.#state = { ...this.#state, controlRequest: controlRequest(action, this.#state), updatedAt: now() };
+		return this.state;
+	}
+
 	abort(reason: string): LoopState {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
 		const gate: GateDecision = {
@@ -239,6 +269,7 @@ export class ReviewLoopRuntime {
 			lifecycle: "complete",
 			phase: "final-report",
 			lastGate: gate,
+			controlRequest: undefined,
 			lastError: reason,
 			updatedAt: now(),
 		};
@@ -252,10 +283,13 @@ export class ReviewLoopRuntime {
 		if (this.#state.phase !== result.phase) throw new Error(`Expected phase ${this.#state.phase}, got ${result.phase}.`);
 		if (this.#state.iteration !== result.iteration) throw new Error(`Expected iteration ${this.#state.iteration}, got ${result.iteration}.`);
 
-		const gate = decideNext(countForPhase(this.#state, result));
+		const control = this.#state.controlRequest;
+		const decidedGate = decideNext(countForPhase(this.#state, result));
+		const gate = control?.action === "stop" && resultCompletesRequestedIteration(result, decidedGate, control) ? stopDecision("user requested stop after current iteration") : decidedGate;
 		const nextIteration = gate.decision === "continue" && result.phase === "impl" && gate.nextPhase === "post-review" ? this.#state.iteration + 1 : this.#state.iteration;
 		const nextPhase = gate.decision === "continue" ? gate.nextPhase : "final-report";
 		const lifecycle = gate.decision === "continue" ? "checkpointing" : "complete";
+		const keepControlRequest = gate.decision === "continue" ? control : undefined;
 		const bucketII = mergeBucketIIItems(this.#state.bucketII, result.bucketII);
 		const reviewTargetBriefing = result.reviewTargetBriefing?.trim() || this.#state.reviewTargetBriefing;
 		const commitMessage = result.commitMessage?.subject.trim() ? { subject: result.commitMessage.subject.trim(), body: result.commitMessage.body?.trim() } : this.#state.commitMessage;
@@ -283,6 +317,7 @@ export class ReviewLoopRuntime {
 				{ phase: result.phase, iteration: result.iteration, gateDecision: `${gate.decision}: ${gate.reason}`, summary: result.summary },
 			],
 			lastGate: gate,
+			controlRequest: keepControlRequest,
 		};
 		this.#state.afterReviewCommit = normalizeAfterReviewCommit(this.#state);
 		return { state: this.state!, gate };
@@ -291,6 +326,17 @@ export class ReviewLoopRuntime {
 	markCheckpointReady(): LoopState {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
 		if (this.#state.lifecycle !== "checkpointing") throw new Error(`Loop is ${this.#state.lifecycle}, not checkpointing.`);
+		const control = this.#state.controlRequest;
+		if (control?.action === "stop" && checkpointHasReachedControlBoundary(this.#state, control)) {
+			const gate = stopDecision("user requested stop after current iteration");
+			this.#state = { ...this.#state, lifecycle: "complete", phase: "final-report", lastGate: gate, controlRequest: undefined, updatedAt: now() };
+			this.#state.afterReviewCommit = normalizeAfterReviewCommit(this.#state);
+			return this.state!;
+		}
+		if (control?.action === "pause" && checkpointHasReachedControlBoundary(this.#state, control)) {
+			this.#state = { ...this.#state, lifecycle: "paused", controlRequest: undefined, updatedAt: now() };
+			return this.state!;
+		}
 		this.#state = { ...this.#state, lifecycle: "active", updatedAt: now() };
 		return this.state!;
 	}
@@ -310,7 +356,7 @@ export class ReviewLoopRuntime {
 	completeWithReport(_report: string): LoopState {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
 		const { finalReport: _finalReport, ...stateWithoutRenderedReport } = this.#state;
-		this.#state = { ...stateWithoutRenderedReport, lifecycle: "complete", phase: "final-report", updatedAt: now() };
+		this.#state = { ...stateWithoutRenderedReport, lifecycle: "complete", phase: "final-report", controlRequest: undefined, updatedAt: now() };
 		return this.state!;
 	}
 }

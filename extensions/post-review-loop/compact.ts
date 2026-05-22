@@ -48,9 +48,15 @@ function lastPhaseSummary(state: LoopState): string {
 }
 
 export function buildCompactionInstructions(state: LoopState): string {
+	const nextAction =
+		state.controlRequest?.action === "stop"
+			? "render the final report after compaction"
+			: state.controlRequest?.action === "pause"
+				? "inject the authoritative next phase prompt after the user resumes the paused loop"
+				: "inject the authoritative next phase prompt immediately after compaction";
 	return `Create a minimal checkpoint summary for the post-review-loop.
 
-Important token rule: do not copy the post-review-loop ledger, Bucket details, validation rows, file hashes, cache JSON, previous phase prompts, or tool schemas into the compaction summary. The extension persists the canonical ledger outside model context and will inject the authoritative next phase prompt immediately after compaction.
+Important token rule: do not copy the post-review-loop ledger, Bucket details, validation rows, file hashes, cache JSON, previous phase prompts, or tool schemas into the compaction summary. The extension persists the canonical ledger outside model context and will ${nextAction}.
 
 Keep only this handoff:
 - post-review-loop checkpoint completed
@@ -58,6 +64,7 @@ Keep only this handoff:
 - scope: ${truncate(state.scope, 500)}
 - next phase: ${state.phase}
 - iteration: ${state.iteration}/${state.limit}
+- pending request: ${state.controlRequest ? `${state.controlRequest.action} after iteration ${state.controlRequest.afterIteration}` : "none"}
 - last completed phase summary: ${truncate(lastPhaseSummary(state), 500)}
 - last gate: ${state.lastGate ? `${state.lastGate.decision}: ${truncate(state.lastGate.reason, 300)}` : "none"}
 - if uncertain after compaction, call post_review_loop_get_state and follow the next extension-injected phase prompt
@@ -131,6 +138,10 @@ export class ReviewLoopCompactor {
 					const next = runtime.markReady();
 					persist("checkpoint-completed");
 					notify(ctx, "Post-review-loop checkpoint compaction completed", "info");
+					if (next.lifecycle === "paused") {
+						notify(ctx, "Post-review-loop paused after current iteration. Use /post-review-loop resume to continue.", "info");
+						return;
+					}
 					if (next.phase !== "final-report") {
 						pi.sendUserMessage(phasePrompt(next, next.phase, { currentFingerprint: computeWorktreeFingerprint(ctx.cwd, fingerprintFiles(next)) }), { deliverAs: "followUp" });
 					}

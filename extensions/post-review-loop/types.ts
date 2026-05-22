@@ -12,8 +12,15 @@ export type Verdict =
 	| "Loop stopped: validation failure remains"
 	| "Loop stopped: review-only pass completed"
 	| "Loop stopped: Bucket I fixes were not applied"
+	| "Loop stopped: user requested stop"
 	| "Loop stopped: scope or context needed"
 	| "Loop stopped: checkpoint compaction unavailable";
+
+export type ControlRequest = {
+	action: "pause" | "stop";
+	/** Iteration that was current when the user requested the loop to drain. */
+	afterIteration: number;
+};
 
 export type BaselineState = {
 	ref: string;
@@ -207,6 +214,7 @@ export type LoopState = {
 	rejectedOrKeptAsIs: RejectedItem[];
 	phasesRun: PhaseHistoryItem[];
 	lastGate?: GateDecision;
+	controlRequest?: ControlRequest;
 	commitMessage?: CommitMessage;
 	/** Deprecated for new entries: final reports are rendered from the ledger instead of persisted in state. */
 	finalReport?: string;
