@@ -290,6 +290,87 @@ export function resumePrompt(state: LoopState, options: { currentFingerprint?: W
 	return phasePrompt(state, state.phase, options);
 }
 
+export function oneshotPrompt(scope: string, options: { reviewOnly?: boolean } = {}): string {
+	const mode = options.reviewOnly ? "review-only: do not edit files" : "review-and-improve: apply straightforward safe fixes automatically";
+	const actInstruction = options.reviewOnly
+		? "Do not edit files. Report Bucket I findings as recommended-but-not-applied and say review-only mode is why no edits were made."
+		: "Apply Bucket I fixes automatically when they are straightforward, materially worthwhile, safe, and inside scope. Implement Bucket II only when the best design-improving path is clear and does not require user taste, domain judgment, rollout choice, compatibility tolerance, or risk acceptance.";
+
+	return `Post-implementation review oneshot. This is a stateless command, not the persistent post-review-loop workflow.
+
+Scope: ${promptLine(scope, 600)}
+Mode: ${mode}
+
+Do not call post_review_loop_get_state, post_review_loop_submit_phase_result, or post_review_loop_abort. Do not start, mutate, pause, stop, or report on persistent post-review-loop state. Do not create checkpoint commits, push, or commit unless the user explicitly asks.
+
+Review the code after the implementation exists. Focus on issues that were hard to see upfront and only became obvious once the change touched real interfaces, control flow, state, tests, docs, or module boundaries.
+
+Default anchoring:
+- If the scope is "uncommitted changes", inspect git status, git diff, git diff --staged, and untracked files shown by status.
+- If the scope names a branch, commit range, file list, feature, or other target, use that target instead.
+- Read changed files, nearby interfaces, affected tests, and colocated docs before deciding.
+- Distinguish issues introduced by this change from pre-existing debt or concerns merely made visible by the change.
+- Identify focused validation commands from the repository's existing workflow.
+
+Review lens:
+- Treat findings as evidence about ownership, boundaries, data shape, control flow, module layout, abstraction fit, or future change cost.
+- Prefer the smallest root-cause refactor that actually improves the codebase's shape, not the smallest tactical patch.
+- Reject weak, speculative, unrealistic, noisy, overbroad, or overcomplicated recommendations.
+- Do not invent a flaw just to produce feedback; a clean review is valid.
+- Avoid tiny helper extractions, naming polish, isolated dedupe, or logging niceties unless they reveal a broader boundary or ownership issue.
+- Consider both over-structure and under-structure: unnecessary fields/options/wrappers/strategy points, and flat or mixed modules that make one concern hard to follow.
+- For UI labels, disabled states, readiness, permissions, repair actions, or run/resume/complete actions, check related state combinations together.
+
+Review scale / tunnel-vision control:
+- Use the lightest review shape that will materially improve confidence. Do not fan out reviewers by default.
+- For small or obvious changes, review directly and do a deliberate second pass if needed.
+- For moderate non-trivial changes, use at most one fresh-context reviewer when independence is likely to catch issues this review may miss.
+- For broad, risky, design-heavy, security-sensitive, or multi-surface changes, use multiple focused reviewers only when distinct risk angles need separate attention.
+- Treat reviewer output as leads: verify every accepted finding yourself against the real code path, nearby interfaces, tests, docs, scope, and risk.
+
+Evidence reuse and batching:
+- If reviewing the same target as an earlier pass, first verify what changed with git status, relevant diffs, and affected file inspection.
+- Reuse inspection facts only for files you can verify are unchanged. Re-inspect changed files and new dependencies needed for the current finding.
+- Reuse validation only when the command's relevant inputs are unchanged and that relationship is clear; otherwise rerun the focused command.
+
+Classification:
+- Bucket I — Straightforward / Recommended: concrete evidence, clear low-risk fix path, materially worthwhile for correctness/design/ownership/organization, and within scope. ${options.reviewOnly ? "Do not apply in review-only mode." : "Apply it."}
+- Bucket II — Design choice / Tradeoff: multiple credible designs, meaningful cost/churn/risk, possible product/domain/architecture judgment, or pre-existing debt outside scope. Prefer the design-improving option; ask before acting only when the tradeoff needs the user's decision.
+- Keep As-Is: plausible concern rejected because evidence is weak, current structure earns its keep, or changing it would be overcorrection.
+
+Act:
+- ${actInstruction}
+- Batch closely related Bucket I items that share files, modules, ownership boundaries, or UI state domains when safe.
+- After code changes, rerun focused tests, typechecks, formatters, or other repo-standard checks.
+- If validation fails because of your changes, fix it or report the blocker clearly. If unrelated/pre-existing, say so.
+
+Snippet rules:
+- When citing existing code, prefer embedded snippets over bare file paths and line numbers.
+- Put the source file path on the first line of each snippet.
+- Keep snippets tight and evidence-focused: signatures, branches, translations, ownership boundaries, and repeated glue code are usually enough.
+- Use file and line references only when a snippet would add noise or the exact location itself is the point.
+
+Output exactly these sections:
+
+### What I Reviewed
+Give 1-3 short sentences explaining the reviewed code, behavior, or flow in human terms. If useful, add one concise line distinguishing files reviewed from files edited.
+
+### Applied / Resolved
+Number each item. Include what the implementation revealed, the design/quality weakness, the root-cause fix/refactor applied, why a smaller patch would have been a bandage when relevant, and validation evidence. If empty, say: No automatic changes were applied.
+
+### Needs Decision / Bucket II
+Number each remaining decision item. Include what was revealed, the design weakness, main options, Recommended action, tradeoffs/risks/uncertainty, and why permission is needed before changing. If empty, say: No unresolved Bucket II decisions remain.
+
+### Keep As-Is
+Call out meaningful findings rejected after verification and why no change is recommended. Omit tiny non-findings.
+
+### Validation
+List validation commands run and results. If no validation was run, explain why.
+
+### Verdict
+End with one of: No meaningful improvement identified; Applied straightforward design improvements; Applied improvements; decision needed for remaining tradeoff; Decision needed before refactor; Validation failure remains.`;
+}
+
 export function renderReusableEvidenceForStatus(state: LoopState, current?: WorktreeFingerprint): string {
 	return reusableEvidenceSection(state, current);
 }

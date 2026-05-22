@@ -5,6 +5,7 @@ Pi extension that owns the post-implementation review loop workflow.
 ## Commands
 
 ```text
+/post-review-loop oneshot [--review-only] [scope]
 /post-review-loop start [--limit N] [--review-only] [--no-git-checkpoint] [scope]
 /post-review-loop status [--full]
 /post-review-loop pause
@@ -21,6 +22,8 @@ Pi extension that owns the post-implementation review loop workflow.
 - `post_review_loop_abort`
 
 The model supplies phase findings, validation, submitted phase-scope files, and code-change facts. The extension persists the ledger, gates phase transitions, owns checkpoint compaction internally, and renders concise default reports; use `--full` for audit detail.
+
+`/post-review-loop oneshot` is stateless. It injects the copied Post-Implementation Review behavior as a one-turn review-and-improve prompt, defaults to `uncommitted changes`, supports `--review-only`, and intentionally does not use the loop ledger, phase tools, checkpointing, compaction, or final-report machinery.
 
 ## Current v1 policies
 
@@ -52,4 +55,4 @@ The model supplies phase findings, validation, submitted phase-scope files, and 
 post-review -> impl-review -> impl -> post-review -> ... -> final-report
 ```
 
-The extension is the source of truth for phase, iteration, status, ledger, checkpointing, and final report shape. The old skill should be treated as the prototype/spec, not a parallel maintained workflow.
+The extension is the source of truth for phase, iteration, status, ledger, checkpointing, final report shape, and the stateless one-shot post-implementation review prompt.

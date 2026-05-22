@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { ReviewLoopCompactor } from "./compact.js";
 import { computeWorktreeFingerprint, createAfterReviewCommit, establishBaseline, failedAfterReviewCommit } from "./git.js";
 import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
-import { phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
+import { oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
 import type { BucketIStatus, BucketIIStatus, ControlRequest, LoopState, PhaseResult, WorktreeFingerprint } from "./types.js";
@@ -371,8 +371,12 @@ function persist(pi: ExtensionAPI, ctx: ExtensionContext, event: string): void {
 	updateStatus(ctx);
 }
 
+function commandTokens(args: string): string[] {
+	return args.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((token) => token.replace(/^"|"$/g, "")) ?? [];
+}
+
 function parseStartArgs(args: string): { scope: string; limit?: number; reviewOnly: boolean; gitCheckpoint: boolean } {
-	const tokens = args.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((token) => token.replace(/^"|"$/g, "")) ?? [];
+	const tokens = commandTokens(args);
 	let limit: number | undefined;
 	let reviewOnly = false;
 	let gitCheckpoint = true;
@@ -405,6 +409,20 @@ function parseStartArgs(args: string): { scope: string; limit?: number; reviewOn
 		scopeParts.push(token);
 	}
 	return { scope: scopeParts.join(" ").trim(), limit, reviewOnly, gitCheckpoint };
+}
+
+function parseOneshotArgs(args: string): { scope: string; reviewOnly: boolean } {
+	const tokens = commandTokens(args);
+	let reviewOnly = false;
+	const scopeParts: string[] = [];
+	for (const token of tokens) {
+		if (token === "--review-only") {
+			reviewOnly = true;
+			continue;
+		}
+		scopeParts.push(token);
+	}
+	return { scope: scopeParts.join(" ").trim(), reviewOnly };
 }
 
 function renderReportOnly(options: { full?: boolean } = {}): string {
@@ -499,9 +517,24 @@ function sendPhasePrompt(pi: ExtensionAPI, ctx: ExtensionContext, state: LoopSta
 
 function registerCommand(pi: ExtensionAPI, name: string): void {
 	pi.registerCommand(name, {
-		description: "Run the deterministic post-review-loop workflow",
+		description: "Run the deterministic post-review-loop workflow or a stateless oneshot review",
 		getArgumentCompletions(prefix) {
-			const options = ["start", "start --limit 3", "start --review-only", "start --no-git-checkpoint", "status", "status --full", "pause", "resume", "stop", "report", "report --full", "clear"];
+			const options = [
+				"oneshot",
+				"oneshot --review-only",
+				"start",
+				"start --limit 3",
+				"start --review-only",
+				"start --no-git-checkpoint",
+				"status",
+				"status --full",
+				"pause",
+				"resume",
+				"stop",
+				"report",
+				"report --full",
+				"clear",
+			];
 			const filtered = options.filter((value) => value.startsWith(prefix));
 			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
 		},
@@ -592,7 +625,15 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				return;
 			}
 
-			notify(ctx, `Unknown subcommand: ${subcommand}. Use start, status, pause, resume, stop, report, or clear.`, "warning");
+			if (subcommand === "oneshot") {
+				const parsed = parseOneshotArgs(restText);
+				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
+				notify(ctx, `Post-review-loop oneshot: ${compactText(scope)}`, "info");
+				pi.sendUserMessage(oneshotPrompt(scope, { reviewOnly: parsed.reviewOnly }), { deliverAs: "followUp" });
+				return;
+			}
+
+			notify(ctx, `Unknown subcommand: ${subcommand}. Use oneshot, start, status, pause, resume, stop, report, or clear.`, "warning");
 		},
 	});
 }
