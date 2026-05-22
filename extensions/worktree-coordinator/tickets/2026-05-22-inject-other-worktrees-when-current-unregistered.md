@@ -1,5 +1,9 @@
 # Inject other worktree awareness even when current worktree is unregistered
 
+## Status
+
+Implemented in `extensions/worktree-coordinator.ts`. A stopped current worktree is treated as unregistered, while stopped entries are excluded from active coordination context.
+
 ## Summary
 
 The worktree coordinator should still warn the current session about other registered worktrees even when the current worktree has not run `/wt start`. A session on `main` should know that another branch/worktree is active, because coordination value comes from avoiding accidental ignorance of parallel work, not only from sessions that opted in first.

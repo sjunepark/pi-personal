@@ -517,7 +517,10 @@ async function stopWorktree(pi: ExtensionAPI, ctx: ExtensionContext, git: GitCon
 
 function renderContext(state: CoordinatorState, git: GitContext): string | undefined {
 	const current = currentEntry(state, git);
-	if (!current) return undefined;
+	return current ? renderRegisteredContext(state, git, current) : renderUnregisteredContext(state, git);
+}
+
+function renderRegisteredContext(state: CoordinatorState, git: GitContext, current: WorktreeEntry): string {
 	const others = otherEntries(state, git).slice(0, MAX_CONTEXT_ITEMS);
 	const lines = [
 		"Parallel git worktree coordination context:",
@@ -529,18 +532,53 @@ function renderContext(state: CoordinatorState, git: GitContext): string | undef
 	if (others.length > 0) {
 		lines.push("- Other registered worktrees:");
 		for (const entry of others) {
-			const area = entry.implementationArea ? `; area: ${truncateLine(entry.implementationArea, 120)}` : "";
-			lines.push(`  - ${entry.branch}: ${truncateLine(entry.intent, 120)}${area}`);
+			lines.push(`  - ${renderContextEntryLine(entry)}`);
 		}
 		const remaining = otherEntries(state, git).length - others.length;
 		if (remaining > 0) lines.push(`  - …and ${remaining} more`);
 	}
 
-	lines.push(
-		"This context is advisory, not a restriction. Overlap is allowed. Prefer the correct design over avoiding shared code; if shared work may affect parallel branches, mention the integration risk clearly.",
-	);
+	lines.push(advisoryContextLine());
 
 	return lines.join("\n");
+}
+
+function renderUnregisteredContext(state: CoordinatorState, git: GitContext): string | undefined {
+	const others = otherEntries(state, git);
+	if (others.length === 0) return undefined;
+
+	const shown = others.slice(0, MAX_CONTEXT_ITEMS);
+	const lines = [
+		"Parallel git worktree coordination context:",
+		`- Current branch: ${git.branch}`,
+		`- Current path: ${git.worktreePath}`,
+		"- Current worktree is not registered with /wt. Start coordination with `/wt start <intent>` if this session will make changes.",
+		"- Other registered worktrees:",
+	];
+
+	for (const entry of shown) {
+		lines.push(`  - ${renderContextEntryLine(entry)}`);
+	}
+	const remaining = others.length - shown.length;
+	if (remaining > 0) lines.push(`  - …and ${remaining} more`);
+
+	lines.push(advisoryContextLine());
+
+	return lines.join("\n");
+}
+
+function renderContextEntryLine(entry: WorktreeEntry): string {
+	const details = [
+		truncateLine(entry.intent, 120),
+		...(entry.implementationArea ? [`area: ${truncateLine(entry.implementationArea, 120)}`] : []),
+		`status: ${entry.status}`,
+		`last seen ${formatAge(entry.lastSeenAt)}`,
+	];
+	return `${entry.branch}: ${details.join("; ")}`;
+}
+
+function advisoryContextLine(): string {
+	return "This context is advisory, not a restriction. Overlap is allowed. Prefer the correct design over avoiding shared code; if shared work may affect parallel branches, mention the integration risk clearly.";
 }
 
 function updateStatus(_pi: ExtensionAPI, ctx: ExtensionContext, git: GitContext): void {
