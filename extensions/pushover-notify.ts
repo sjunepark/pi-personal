@@ -22,8 +22,11 @@ type PushoverConfig = {
 type AssistantLike = {
 	role?: string;
 	stopReason?: string;
-	errorMessage?: string;
-	content?: Array<{ type?: string; text?: string }>;
+};
+
+type CompletionNotification = {
+	title: string;
+	message: string;
 };
 
 function readConfig(): PushoverConfig {
@@ -103,43 +106,20 @@ function trimSummary(text: string, maxLength = 160): string {
 	return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 3)}...` : collapsed;
 }
 
-function summarizeAssistantText(message: AssistantLike): string | undefined {
-	if (!Array.isArray(message.content)) return undefined;
-	const text = message.content
-		.filter((part): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string")
-		.map((part) => part.text.trim())
-		.filter(Boolean)
-		.join("\n")
-		.trim();
-	return text ? trimSummary(text) : undefined;
-}
-
-function completionMessage(messages: readonly unknown[], durationMs: number): { title: string; message: string; priority?: string } {
+function completionMessage(messages: readonly unknown[], durationMs: number): CompletionNotification | undefined {
 	const assistant = getLastAssistantMessage(messages);
+	if (assistant?.stopReason === "error" || assistant?.stopReason === "aborted") {
+		return undefined;
+	}
+
 	const duration = formatDuration(durationMs);
-
-	if (assistant?.stopReason === "error") {
-		return {
-			title: "Pi error",
-			message: trimSummary(assistant.errorMessage?.trim() || summarizeAssistantText(assistant) || `Run failed after ${duration}`),
-			priority: "1",
-		};
-	}
-
-	if (assistant?.stopReason === "aborted") {
-		return {
-			title: "Pi stopped",
-			message: trimSummary(assistant.errorMessage?.trim() || `Run stopped after ${duration}`),
-		};
-	}
-
 	return {
 		title: DEFAULT_TITLE,
 		message: durationMs >= 1000 ? `${DEFAULT_MESSAGE} (took ${duration})` : DEFAULT_MESSAGE,
 	};
 }
 
-async function sendPushover(config: PushoverConfig, title: string, message: string, priority?: string): Promise<void> {
+async function sendPushover(config: PushoverConfig, title: string, message: string): Promise<void> {
 	if (!config.token || !config.user) {
 		throw new Error("Pushover is not configured. Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY.");
 	}
@@ -152,7 +132,6 @@ async function sendPushover(config: PushoverConfig, title: string, message: stri
 	});
 	if (config.device) body.set("device", config.device);
 	if (config.sound) body.set("sound", config.sound);
-	if (priority) body.set("priority", priority);
 
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -206,6 +185,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 		if (durationMs < config.minDurationMs) return;
 
 		const completion = completionMessage(event.messages, durationMs);
+		if (!completion) return;
+
 		const baseTitle = completion.title === DEFAULT_TITLE ? config.title : completion.title;
 		const title = formatTitle(baseTitle, await getCmuxWorkspaceName(pi));
 		const notificationKey = `${title}\n${completion.message}`;
@@ -214,7 +195,7 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 
 		lastNotificationKey = notificationKey;
 		lastNotificationAt = now;
-		void sendPushover(config, title, completion.message, completion.priority).catch((error) => {
+		void sendPushover(config, title, completion.message).catch((error) => {
 			reportFailure(ctx, error);
 		});
 	});

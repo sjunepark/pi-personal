@@ -26,7 +26,6 @@ type RunState = {
 	changedFiles: Set<string>;
 	searchCount: number;
 	bashCount: number;
-	firstToolError?: string;
 	suppressCompletionNotify?: boolean;
 	continuationStatus?: string;
 	continuationLogMessage?: string;
@@ -98,20 +97,6 @@ function getPath(event: ToolResultEvent): string | undefined {
 	return typeof event.input.path === "string" && event.input.path.length > 0 ? event.input.path : undefined;
 }
 
-function getFirstText(event: ToolResultEvent): string | undefined {
-	const textPart = event.content.find((part) => part.type === "text");
-	if (!textPart || textPart.type !== "text") return undefined;
-	const text = textPart.text.trim();
-	return text.length > 0 ? text : undefined;
-}
-
-function summarizeToolError(event: ToolResultEvent): string {
-	const path = getPath(event);
-	if (path) return trimSummary(`${event.toolName} failed for ${basename(path)}`);
-	if (isBashToolResult(event)) return "bash command failed";
-	return trimSummary(getFirstText(event) || `${event.toolName} failed`);
-}
-
 function getCurrentPhaseState(toolName?: string): StatusState {
 	if (!toolName) {
 		return { value: "Thinking", color: "#4C8DFF", icon: "bolt.fill", priority: STATUS_PRIORITY_WORKING };
@@ -178,18 +163,13 @@ function getNotifyControl(details: unknown): NotifyControlDetails["notify"] | un
 	return notify && typeof notify === "object" ? notify : undefined;
 }
 
-function summarizeRunOutcome(
-	messages: readonly unknown[],
-	fallback?: string,
-): { kind: "error" | "aborted"; message: string } | undefined {
+function summarizeRunOutcome(messages: readonly unknown[]): { kind: "error" | "aborted"; message: string } | undefined {
 	const assistant = getLastAssistantMessage(messages);
-	if (!assistant) {
-		return fallback ? { kind: "error", message: fallback } : undefined;
-	}
+	if (!assistant) return undefined;
 	if (assistant.stopReason === "error") {
 		return {
 			kind: "error",
-			message: trimSummary(assistant.errorMessage?.trim() || summarizeAssistantText(assistant) || fallback || "Agent run failed"),
+			message: trimSummary(assistant.errorMessage?.trim() || summarizeAssistantText(assistant) || "Agent run failed"),
 		};
 	}
 	if (assistant.stopReason === "aborted") {
@@ -300,10 +280,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", async (event) => {
-		if (event.isError && !runState.firstToolError) {
-			runState.firstToolError = summarizeToolError(event);
-		}
-
 		const notifyControl = getNotifyControl(event.details);
 		if (notifyControl?.suppressCompletion === true) {
 			runState.suppressCompletionNotify = true;
@@ -339,13 +315,12 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (event) => {
 		const durationMs = Date.now() - runState.startedAt;
-		const runOutcome = summarizeRunOutcome(event.messages, runState.firstToolError);
+		const runOutcome = summarizeRunOutcome(event.messages);
 
 		if (runOutcome?.kind === "error") {
 			currentStatusPriority = STATUS_PRIORITY_IDLE;
 			await applyStatus({ value: "Error", color: "#FF3B30", icon: "warning", priority: STATUS_PRIORITY_ERROR }, true);
 			await log("error", runOutcome.message);
-			await notify("Error", runOutcome.message);
 			return;
 		}
 
