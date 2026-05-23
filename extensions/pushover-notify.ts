@@ -379,6 +379,9 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 
 	pi.registerCommand("pushover", {
 		description: "Manage Pushover notifications: on, off, status, test",
+		getArgumentCompletions(prefix) {
+			return ["on", "off", "status", "test"].filter((value) => value.startsWith(prefix));
+		},
 		handler: async (args, ctx) => {
 			const action = (args ?? "").trim().toLowerCase();
 			try {
@@ -403,43 +406,6 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 			} catch (error) {
 				reportFailure(ctx, error);
 			}
-		},
-	});
-
-	pi.registerCommand("pushover-on", {
-		description: "Enable automatic Pushover completion notifications",
-		handler: async (_args, ctx) => {
-			try {
-				setPushoverEnabled(true, ctx);
-			} catch (error) {
-				reportFailure(ctx, error);
-			}
-		},
-	});
-
-	pi.registerCommand("pushover-off", {
-		description: "Disable automatic Pushover completion notifications",
-		handler: async (_args, ctx) => {
-			try {
-				setPushoverEnabled(false, ctx);
-			} catch (error) {
-				reportFailure(ctx, error);
-			}
-		},
-	});
-
-	pi.registerCommand("pushover-status", {
-		description: "Show Pushover notification status",
-		handler: async (_args, ctx) => {
-			updatePushoverStatus(ctx);
-			ctx.ui.notify(pushoverStatusMessage(), "info");
-		},
-	});
-
-	pi.registerCommand("pushover-test", {
-		description: "Send a test Pushover notification",
-		handler: async (_args, ctx) => {
-			await sendTestNotification(ctx);
 		},
 	});
 }
