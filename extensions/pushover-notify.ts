@@ -380,7 +380,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 	pi.registerCommand("pushover", {
 		description: "Manage Pushover notifications: on, off, status, test",
 		getArgumentCompletions(prefix) {
-			return ["on", "off", "status", "test"].filter((value) => value.startsWith(prefix));
+			const filtered = ["on", "off", "status", "test"].filter((value) => value.startsWith(prefix));
+			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
 			const action = (args ?? "").trim().toLowerCase();
