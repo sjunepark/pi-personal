@@ -88,7 +88,7 @@ function normalizeLimit(limit: number | undefined): number {
 	return limit;
 }
 
-function countForPhase(state: LoopState, result: PhaseResult): GateSnapshot {
+function countForPhase(state: LoopState, result: PhaseResult, validationBlocked: boolean): GateSnapshot {
 	const currentBucketI = currentBucketIItems([...state.bucketI, ...result.bucketI]);
 	const bucketICandidates = currentBucketI.filter(isActionableBucketI).length;
 	const acceptedBucketI = currentBucketI.filter((item) => item.status === "accepted" || item.status === "remaining").length;
@@ -100,7 +100,7 @@ function countForPhase(state: LoopState, result: PhaseResult): GateSnapshot {
 		limit: state.limit,
 		reviewOnly: state.reviewOnly,
 		scopeBlocked: result.scopeBlocked === true,
-		validationBlocked: result.validationBlocked === true || result.validation.some((item) => item.result === "failed"),
+		validationBlocked,
 		checkpointUnavailable: false,
 		bucketICandidates,
 		acceptedBucketI,
@@ -147,6 +147,26 @@ function validationCacheEntries(cwd: string, result: PhaseResult, fingerprint: W
 				fileHashes: fileInput?.fileHashes,
 			} satisfies ValidationCacheEntry;
 		});
+}
+
+function validationInputKey(entry: ValidationCacheEntry): string {
+	return [entry.cwd, entry.command, entry.inputKind, entry.inputHash].join("\u0000");
+}
+
+function hasCurrentValidationFailure(result: PhaseResult, cacheEntries: ValidationCacheEntry[]): boolean {
+	if (result.validationBlocked === true) return true;
+	if (cacheEntries.length) {
+		const latestByInput = new Map<string, ValidationCacheEntry>();
+		for (const entry of cacheEntries) latestByInput.set(validationInputKey(entry), entry);
+		return Array.from(latestByInput.values()).some((entry) => entry.result === "failed");
+	}
+
+	const latestByCommand = new Map<string, PhaseResult["validation"][number]>();
+	for (const record of result.validation) {
+		if (record.result === "skipped") continue;
+		latestByCommand.set(record.command, record);
+	}
+	return Array.from(latestByCommand.values()).some((record) => record.result === "failed");
 }
 
 function phaseEvidenceCache(result: PhaseResult, fingerprint: WorktreeFingerprint, gate: GateDecision): PhaseEvidenceCache {
@@ -284,7 +304,9 @@ export class ReviewLoopRuntime {
 		if (this.#state.iteration !== result.iteration) throw new Error(`Expected iteration ${this.#state.iteration}, got ${result.iteration}.`);
 
 		const control = this.#state.controlRequest;
-		const decidedGate = decideNext(countForPhase(this.#state, result));
+		const nextValidationCache = cacheInput ? validationCacheEntries(cacheInput.cwd, result, cacheInput.fingerprint) : [];
+		const validationBlocked = hasCurrentValidationFailure(result, nextValidationCache);
+		const decidedGate = decideNext(countForPhase(this.#state, result, validationBlocked));
 		const gate = control?.action === "stop" && resultCompletesRequestedIteration(result, decidedGate, control) ? stopDecision("user requested stop after current iteration") : decidedGate;
 		const nextIteration = gate.decision === "continue" && result.phase === "impl" && gate.nextPhase === "post-review" ? this.#state.iteration + 1 : this.#state.iteration;
 		const nextPhase = gate.decision === "continue" ? gate.nextPhase : "final-report";
@@ -293,7 +315,6 @@ export class ReviewLoopRuntime {
 		const bucketII = mergeBucketIIItems(this.#state.bucketII, result.bucketII);
 		const reviewTargetBriefing = result.reviewTargetBriefing?.trim() || this.#state.reviewTargetBriefing;
 		const commitMessage = result.commitMessage?.subject.trim() ? { subject: result.commitMessage.subject.trim(), body: result.commitMessage.body?.trim() } : this.#state.commitMessage;
-		const nextValidationCache = cacheInput ? validationCacheEntries(cacheInput.cwd, result, cacheInput.fingerprint) : [];
 		const nextPhaseCache = cacheInput ? [phaseEvidenceCache(result, cacheInput.fingerprint, gate)] : [];
 
 		this.#state = {

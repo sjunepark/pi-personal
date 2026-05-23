@@ -78,7 +78,7 @@ function escapeTable(value: string): string {
 }
 
 function validationKey(record: ValidationResult): string {
-	return `${record.command}\u0000${record.result}\u0000${record.source ?? "fresh"}`;
+	return record.command;
 }
 
 function groupedValidation(records: ValidationResult[]): Array<ValidationResult & { count: number; phases: string[] }> {
@@ -88,6 +88,8 @@ function groupedValidation(records: ValidationResult[]): Array<ValidationResult 
 		const previous = byKey.get(key);
 		if (previous) {
 			previous.count += 1;
+			previous.result = record.result;
+			previous.source = record.source;
 			previous.notes = record.notes;
 			previous.phase = record.phase;
 			previous.phases = unique([...previous.phases, record.phase]);
@@ -114,15 +116,11 @@ function renderValidationFull(records: ValidationResult[]): string {
 
 function renderValidationOutcome(records: ValidationResult[]): string {
 	if (!records.length) return "not recorded";
-	let latestExecuted: ValidationResult | undefined;
-	for (let index = records.length - 1; index >= 0; index -= 1) {
-		if (records[index].result !== "skipped") {
-			latestExecuted = records[index];
-			break;
-		}
-	}
-	if (!latestExecuted) return `skipped — ${line(records[records.length - 1].notes)}`;
-	if (latestExecuted.result === "failed") return `failed — ${line(latestExecuted.command)}`;
+	const latestByCommand = groupedValidation(records).filter((record) => record.result !== "skipped");
+	if (!latestByCommand.length) return `skipped — ${line(records[records.length - 1].notes)}`;
+	const failed = latestByCommand.filter((record) => record.result === "failed");
+	if (failed.length) return `failed — ${list(failed.map((record) => record.command), "unknown command", 3)}`;
+	const latestExecuted = latestByCommand.at(-1)!;
 	const hadEarlierFailure = records.some((record) => record.result === "failed");
 	return hadEarlierFailure ? `passed after earlier failures — latest: ${line(latestExecuted.command)}` : `passed — ${line(latestExecuted.command)}`;
 }

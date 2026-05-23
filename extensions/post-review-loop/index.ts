@@ -10,7 +10,7 @@ import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import { oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
-import type { BucketIStatus, BucketIIStatus, ControlRequest, LoopState, PhaseResult, WorktreeFingerprint } from "./types.js";
+import type { BucketIStatus, BucketIIStatus, ControlRequest, LoopState, PhaseResult, ValidationResult, WorktreeFingerprint } from "./types.js";
 import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
@@ -181,9 +181,9 @@ function sendMarkdownMessage(
 	pi.sendMessage(
 		{
 			customType: MARKDOWN_MESSAGE_TYPE,
-			content: title,
+			content: markdown,
 			display: true,
-			details: { markdown },
+			details: { title, markdown },
 		},
 		options,
 	);
@@ -249,6 +249,23 @@ function controlRequestText(request: ControlRequest | undefined): string | undef
 	return `${request.action} after iteration ${request.afterIteration}`;
 }
 
+function currentFailedValidation(state: LoopState): ValidationResult[] {
+	if (state.validationCache?.length) {
+		const latestByCommand = new Map<string, LoopState["validationCache"][number]>();
+		for (const entry of state.validationCache) latestByCommand.set(entry.command, entry);
+		return Array.from(latestByCommand.values())
+			.filter((entry) => entry.result === "failed")
+			.map((entry) => ({ command: entry.command, result: entry.result, phase: entry.phase, notes: entry.notes, source: entry.source }));
+	}
+
+	const latestByCommand = new Map<string, ValidationResult>();
+	for (const record of state.validation) {
+		if (record.result === "skipped") continue;
+		latestByCommand.set(record.command, record);
+	}
+	return Array.from(latestByCommand.values()).filter((record) => record.result === "failed");
+}
+
 function pauseAfterCheckpoint(state: LoopState): boolean {
 	return state.lifecycle === "checkpointing" && state.phase === "post-review" && state.controlRequest?.action === "pause" && state.iteration > state.controlRequest.afterIteration;
 }
@@ -286,7 +303,7 @@ function compactStatusMarkdown(state: LoopState | null, options: { currentFinger
 	const actionableBucketI = currentBucketI.filter((item) => item.status === "candidate" || item.status === "accepted" || item.status === "remaining");
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 	const unresolvedBucketII = currentBucketII.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now");
-	const failedValidation = state.validation.filter((item) => item.result === "failed").slice(-3);
+	const failedValidation = currentFailedValidation(state).slice(-3);
 	return [
 		"# Post-Review Loop Status",
 		"",
@@ -335,6 +352,7 @@ function statusMarkdown(state: LoopState | null, options: { full?: boolean; curr
 
 function requiredNextAction(state: LoopState): string {
 	const control = controlRequestText(state.controlRequest);
+	if (state.lifecycle === "complete") return "No further post-review-loop action is required. The final report has been rendered or is available from post_review_loop_get_state and /post-review-loop report.";
 	if (state.lifecycle === "checkpointing") return control ? `Stop substantial work and wait for checkpoint compaction to finish; pending request: ${control}.` : "Stop substantial work and wait for checkpoint compaction to finish.";
 	if (state.lifecycle === "paused") return "Resume the loop before submitting another phase result.";
 	if (state.phase === "final-report") return "Render or inspect the final report.";
@@ -358,8 +376,7 @@ function compactToolDetails(state: LoopState | null, extra: Record<string, unkno
 			unresolvedBucketII: compactStatusArray(
 				currentBucketII.filter((item) => item.status === "left for user decision" || item.status === "deferred" || item.status === "kept as-is for now").map((item) => item.title),
 			),
-			failedValidation: state.validation
-				.filter((item) => item.result === "failed")
+			failedValidation: currentFailedValidation(state)
 				.slice(-3)
 				.map((item) => ({ ...item, command: compactStatusText(item.command), notes: compactStatusText(item.notes, 260) })),
 			requiredNextAction: requiredNextAction(state),
@@ -705,7 +722,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 				if (gate.decision === "stop") {
 					const report = completeWithReport(pi, ctx, "final-report-rendered");
 					queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
-					return textToolResult("Post-review-loop stopped. The final report will render as a separate markdown message.", compactToolDetails(runtime.state, { gate }), false, true);
+					return textToolResult(`Post-review-loop stopped. Final report:\n\n${report}`, compactToolDetails(runtime.state, { gate, report }), false, true);
 				}
 
 				const queued = compactor.queue(pi, ctx, state);
@@ -745,7 +762,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 				runtime.abort(params.reason);
 				const report = completeWithReport(pi, ctx, "aborted");
 				queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
-				return textToolResult("Post-review-loop aborted. The final report will render as a separate markdown message.", compactToolDetails(runtime.state), false, true);
+				return textToolResult(`Post-review-loop aborted. Final report:\n\n${report}`, compactToolDetails(runtime.state, { report }), false, true);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return textToolResult(message, compactToolDetails(runtime.state, { error: message }), true);
