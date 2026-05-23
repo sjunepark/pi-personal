@@ -29,6 +29,26 @@ type CompletionNotification = {
 	message: string;
 };
 
+type PostReviewLoopState = {
+	id?: string;
+	lifecycle?: string;
+	createdAt?: number;
+	phase?: string;
+	iteration?: number;
+	limit?: number;
+};
+
+type PostReviewLoopEntry = {
+	type?: string;
+	customType?: string;
+	data?: {
+		event?: string;
+		state?: unknown;
+	};
+};
+
+const POST_REVIEW_LOOP_ENTRY_TYPE = "post-review-loop-state";
+
 function readConfig(): PushoverConfig {
 	return {
 		token: firstNonEmpty(process.env.PUSHOVER_APP_TOKEN, process.env.PUSHOVER_API_TOKEN),
@@ -75,6 +95,38 @@ function formatDuration(ms: number): string {
 	return `${minutes}m ${seconds}s`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object");
+}
+
+function isPostReviewLoopState(value: unknown): value is PostReviewLoopState {
+	return isRecord(value) && value.version === 1 && typeof value.id === "string" && typeof value.lifecycle === "string";
+}
+
+function latestPostReviewLoopState(ctx: ExtensionContext): PostReviewLoopState | null {
+	const manager = ctx.sessionManager as { getBranch?: () => unknown[]; getEntries?: () => unknown[] };
+	const entries = manager.getBranch?.() ?? manager.getEntries?.() ?? [];
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index] as PostReviewLoopEntry;
+		if (entry.type !== "custom" || entry.customType !== POST_REVIEW_LOOP_ENTRY_TYPE) continue;
+		if (entry.data?.event === "cleared") return null;
+		if (isPostReviewLoopState(entry.data?.state)) return entry.data.state;
+	}
+	return null;
+}
+
+function postReviewLoopId(state: PostReviewLoopState | null): string | undefined {
+	return firstNonEmpty(state?.id);
+}
+
+function isPostReviewLoopTerminal(state: PostReviewLoopState): boolean {
+	return state.lifecycle === "complete" || state.lifecycle === "failed";
+}
+
+function loopDurationMs(state: PostReviewLoopState, fallbackMs: number): number {
+	return typeof state.createdAt === "number" && Number.isFinite(state.createdAt) && state.createdAt > 0 ? Math.max(0, Date.now() - state.createdAt) : fallbackMs;
+}
+
 function parseCmuxWorkspaceName(treeOutput: string): string | undefined {
 	const match = treeOutput.match(/^.*\bworkspace\s+workspace:\d+\s+"([^"]+)".*$/m);
 	return match?.[1]?.trim() || undefined;
@@ -116,6 +168,15 @@ function completionMessage(messages: readonly unknown[], durationMs: number): Co
 	return {
 		title: DEFAULT_TITLE,
 		message: durationMs >= 1000 ? `${DEFAULT_MESSAGE} (took ${duration})` : DEFAULT_MESSAGE,
+	};
+}
+
+function postReviewLoopCompletionMessage(state: PostReviewLoopState, durationMs: number): CompletionNotification {
+	const status = state.lifecycle === "failed" ? "failed" : "completed";
+	const progress = typeof state.iteration === "number" && typeof state.limit === "number" ? ` after ${state.iteration}/${state.limit}` : "";
+	return {
+		title: DEFAULT_TITLE,
+		message: `Post-review-loop ${status}${progress} (took ${formatDuration(durationMs)})`,
 	};
 }
 
@@ -165,28 +226,11 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 	let warnedMissingConfig = false;
 	let lastNotificationKey = "";
 	let lastNotificationAt = 0;
+	let currentPostReviewLoopId: string | undefined;
+	const observedActivePostReviewLoopIds = new Set<string>();
+	const notifiedPostReviewLoopIds = new Set<string>();
 
-	pi.on("session_start", async (_event, ctx) => {
-		if (!isConfigured(readConfig()) && !warnedMissingConfig) {
-			warnedMissingConfig = true;
-			showConfigurationWarning(ctx);
-		}
-	});
-
-	pi.on("agent_start", async () => {
-		startedAt = Date.now();
-	});
-
-	pi.on("agent_end", async (event, ctx) => {
-		const config = readConfig();
-		if (!isConfigured(config)) return;
-
-		const durationMs = Date.now() - startedAt;
-		if (durationMs < config.minDurationMs) return;
-
-		const completion = completionMessage(event.messages, durationMs);
-		if (!completion) return;
-
+	async function sendCompletion(ctx: ExtensionContext, config: PushoverConfig, completion: CompletionNotification): Promise<void> {
 		const baseTitle = completion.title === DEFAULT_TITLE ? config.title : completion.title;
 		const title = formatTitle(baseTitle, await getCmuxWorkspaceName(pi));
 		const notificationKey = `${title}\n${completion.message}`;
@@ -198,6 +242,65 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 		void sendPushover(config, title, completion.message).catch((error) => {
 			reportFailure(ctx, error);
 		});
+	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (!isConfigured(readConfig()) && !warnedMissingConfig) {
+			warnedMissingConfig = true;
+			showConfigurationWarning(ctx);
+		}
+
+		const state = latestPostReviewLoopState(ctx);
+		const id = postReviewLoopId(state);
+		if (!state || !id) return;
+		if (isPostReviewLoopTerminal(state)) {
+			notifiedPostReviewLoopIds.add(id);
+		} else {
+			observedActivePostReviewLoopIds.add(id);
+		}
+	});
+
+	pi.on("agent_start", async (_event, ctx) => {
+		startedAt = Date.now();
+		const state = latestPostReviewLoopState(ctx);
+		const id = postReviewLoopId(state);
+		currentPostReviewLoopId = state && id && !isPostReviewLoopTerminal(state) ? id : undefined;
+		if (currentPostReviewLoopId) observedActivePostReviewLoopIds.add(currentPostReviewLoopId);
+	});
+
+	pi.on("agent_end", async (event, ctx) => {
+		const startedLoopId = currentPostReviewLoopId;
+		currentPostReviewLoopId = undefined;
+
+		const loopState = latestPostReviewLoopState(ctx);
+		const loopId = postReviewLoopId(loopState);
+		if (loopState && loopId && !isPostReviewLoopTerminal(loopState)) {
+			observedActivePostReviewLoopIds.add(loopId);
+			return;
+		}
+
+		const config = readConfig();
+		if (!isConfigured(config)) return;
+
+		const durationMs = Date.now() - startedAt;
+		const loopCompletedDuringThisAgent = Boolean(
+			loopState && loopId && isPostReviewLoopTerminal(loopState) && (startedLoopId === loopId || observedActivePostReviewLoopIds.has(loopId)),
+		);
+		if (loopCompletedDuringThisAgent && loopState && loopId && !notifiedPostReviewLoopIds.has(loopId)) {
+			notifiedPostReviewLoopIds.add(loopId);
+			const loopDuration = loopDurationMs(loopState, durationMs);
+			if (loopDuration < config.minDurationMs) return;
+			await sendCompletion(ctx, config, postReviewLoopCompletionMessage(loopState, loopDuration));
+			return;
+		}
+		if (startedLoopId) return;
+
+		if (durationMs < config.minDurationMs) return;
+
+		const completion = completionMessage(event.messages, durationMs);
+		if (!completion) return;
+
+		await sendCompletion(ctx, config, completion);
 	});
 
 	pi.registerCommand("pushover-test", {
