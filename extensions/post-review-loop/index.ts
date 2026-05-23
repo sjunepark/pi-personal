@@ -681,7 +681,9 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const state = runtime.state;
 			const currentFingerprint = currentFingerprintForState(ctx, state);
-			return textToolResult(statusMarkdown(state, { currentFingerprint }), compactToolDetails(state, { currentFingerprint }));
+			const returnFinalReport = state?.lifecycle === "complete" || state?.phase === "final-report";
+			const markdown = statusMarkdown(state, { full: returnFinalReport, currentFingerprint });
+			return textToolResult(markdown, compactToolDetails(state, returnFinalReport ? { currentFingerprint, report: markdown } : { currentFingerprint }));
 		},
 		renderResult(result) {
 			const text = result.content.find((item) => item.type === "text")?.text ?? "";
