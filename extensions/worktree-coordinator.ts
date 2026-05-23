@@ -1,3 +1,4 @@
+import { complete, type UserMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { spawnSync } from "node:child_process";
@@ -15,6 +16,9 @@ const STATE_LOCK_TIMEOUT_MS = 2_000;
 const STATE_LOCK_RETRY_MS = 25;
 const MAX_CONTEXT_ITEMS = 4;
 const MAX_STATUS_FILES = 12;
+const MAX_INFERRED_AREA_CHARS = 160;
+const MAX_INFERENCE_CONTEXT_CHARS = 12_000;
+const MAX_INFERENCE_ENTRIES = 48;
 
 type EntryStatus = "open" | "idle" | "stopped";
 
@@ -104,6 +108,18 @@ function truncateLine(value: string, max = 180): string {
 	const trimmed = value.trim();
 	if (trimmed.length <= max) return trimmed;
 	return `${trimmed.slice(0, max - 1)}…`;
+}
+
+function compactOneLine(value: string, max = MAX_INFERRED_AREA_CHARS): string {
+	const singleLine = value
+		.replace(/^```(?:\w+)?|```$/g, "")
+		.replace(/[\r\n]+/g, " ")
+		.replace(/^[-*]\s+/, "")
+		.replace(/^(?:area|implementation area|worktree area):\s*/i, "")
+		.replace(/^['\"]|['\"]$/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	return truncateLine(singleLine, max);
 }
 
 async function runGit(pi: ExtensionAPI, cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<ExecResult> {
@@ -345,7 +361,7 @@ function renderRegisteredEntry(entry: WorktreeEntry, git: GitContext, current: b
 		...(current ? [`- Branch: ${entry.branch}`, `- Path: ${entry.worktreePath}`] : []),
 		`- Status: ${entry.status}; last seen ${formatAge(entry.lastSeenAt)}`,
 		`- Intent: ${entry.intent}`,
-		...(entry.implementationArea ? [`- Broad implementation area: ${entry.implementationArea}`] : ["- Broad implementation area: not recorded yet; run `/wt update <area>` after code investigation."]),
+		...(entry.implementationArea ? [`- Broad implementation area: ${entry.implementationArea}`] : ["- Broad implementation area: not recorded yet; run `/wt update` after code investigation."]),
 		...formatDirtyFiles(entry),
 	];
 }
@@ -414,7 +430,8 @@ function renderHelp(): string {
 		"",
 		"Commands:",
 		"- `/wt start <intent>` — register this worktree/session with the user's implementation intent.",
-		"- `/wt update <broad code area>` — record broad modules/packages/areas discovered after investigation.",
+		"- `/wt update` — infer a short broad code area from the current conversation and dirty files.",
+		"- `/wt update <broad code area>` — explicitly record broad modules/packages/areas discovered after investigation.",
 		"- `/wt status` — show registered worktrees, broad areas, and local dirty-file overlap.",
 		"- `/wt stop` — mark this worktree as no longer participating in coordination.",
 		"- `/wt help` — show this help.",
@@ -455,20 +472,147 @@ async function startWorktree(pi: ExtensionAPI, ctx: ExtensionContext, git: GitCo
 	notify(ctx, `Registered worktree coordination for ${git.branch}.`, "info");
 }
 
+function extractTextContent(content: unknown, max = 1_000): string | undefined {
+	if (typeof content === "string") return truncateLine(content, max);
+	if (!Array.isArray(content)) return undefined;
+
+	const parts: string[] = [];
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		const typed = block as { type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown };
+		if (typed.type === "text" && typed.text) parts.push(typed.text);
+		else if (typed.type === "toolCall" && typed.name) parts.push(`tool ${typed.name}: ${JSON.stringify(typed.arguments ?? {})}`);
+	}
+
+	const text = parts.join("\n").trim();
+	return text ? truncateLine(text, max) : undefined;
+}
+
+function formatConversationEntry(entry: unknown): string | undefined {
+	if (!entry || typeof entry !== "object") return undefined;
+	const typed = entry as {
+		type?: string;
+		message?: { role?: string; content?: unknown; toolName?: string; command?: string; output?: string };
+		summary?: string;
+		command?: string;
+		output?: string;
+	};
+
+	if (typed.type === "message" && typed.message) {
+		const role = typed.message.role ?? "message";
+		if (role === "toolResult") {
+			const resultText = extractTextContent(typed.message.content, 400);
+			return resultText ? `toolResult ${typed.message.toolName ?? "tool"}: ${resultText}` : undefined;
+		}
+		if (role === "bashExecution" && typed.message.command) {
+			const output = typed.message.output ? ` -> ${truncateLine(typed.message.output, 300)}` : "";
+			return `bash: ${truncateLine(typed.message.command, 400)}${output}`;
+		}
+		const text = extractTextContent(typed.message.content, role === "assistant" ? 700 : 1_200);
+		return text ? `${role}: ${text}` : undefined;
+	}
+
+	if ((typed.type === "compaction" || typed.type === "branch_summary") && typed.summary) {
+		return `${typed.type}: ${truncateLine(typed.summary, 1_000)}`;
+	}
+
+	if (typed.type === "bashExecution" && typed.command) {
+		const output = typed.output ? ` -> ${truncateLine(typed.output, 300)}` : "";
+		return `bash: ${truncateLine(typed.command, 400)}${output}`;
+	}
+
+	return undefined;
+}
+
+function recentConversationText(ctx: ExtensionContext): string {
+	const branch = ctx.sessionManager.getBranch().slice(-MAX_INFERENCE_ENTRIES);
+	const lines: string[] = [];
+	for (const entry of branch) {
+		const line = formatConversationEntry(entry);
+		if (line) lines.push(line);
+	}
+	return truncateLine(lines.join("\n"), MAX_INFERENCE_CONTEXT_CHARS);
+}
+
+function fallbackImplementationArea(ctx: ExtensionContext, dirtyFiles: string[]): string | undefined {
+	if (dirtyFiles.length > 0) return compactOneLine(`Touched files: ${dirtyFiles.slice(0, 4).join(", ")}`);
+
+	const branch = ctx.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const line = formatConversationEntry(branch[i]);
+		if (!line?.startsWith("user:")) continue;
+		const text = line.slice("user:".length).trim();
+		if (text.startsWith("/wt ")) continue;
+		return compactOneLine(text);
+	}
+	return undefined;
+}
+
+async function inferImplementationArea(
+	ctx: ExtensionContext,
+	current: WorktreeEntry,
+	dirtyFiles: string[],
+): Promise<string | undefined> {
+	if (!ctx.model) return fallbackImplementationArea(ctx, dirtyFiles);
+
+	try {
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+		if (!auth.ok || !auth.apiKey) return fallbackImplementationArea(ctx, dirtyFiles);
+
+		const userMessage: UserMessage = {
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: [
+						`Current worktree intent: ${current.intent}`,
+						`Current branch: ${current.branch}`,
+						`Dirty files: ${dirtyFiles.length ? dirtyFiles.slice(0, MAX_STATUS_FILES).join(", ") : "none"}`,
+						"",
+						"Current session conversation excerpt:",
+						recentConversationText(ctx),
+					].join("\n"),
+				},
+			],
+			timestamp: Date.now(),
+		};
+
+		const response = await complete(
+			ctx.model,
+			{
+				systemPrompt: [
+					"Infer the short worktree coordination area for this coding session.",
+					`Output only one concise line, ${MAX_INFERRED_AREA_CHARS} characters or fewer.`,
+					"Mention the broad module/package/code area and goal. Do not use bullets, markdown, quotes, or filler.",
+					"Do not say you cannot know. If uncertain, use the current intent and dirty files.",
+				].join("\n"),
+				messages: [userMessage],
+			},
+			{ apiKey: auth.apiKey, headers: auth.headers },
+		);
+
+		const text = extractTextContent(response.content, MAX_INFERRED_AREA_CHARS * 2);
+		return text ? compactOneLine(text) : fallbackImplementationArea(ctx, dirtyFiles);
+	} catch {
+		return fallbackImplementationArea(ctx, dirtyFiles);
+	}
+}
+
 async function updateWorktree(pi: ExtensionAPI, ctx: ExtensionContext, git: GitContext, body: string): Promise<void> {
-	const implementationArea =
-		body ||
-		(await promptForText(
-			ctx,
-			"Broad implementation area",
-			"What broad modules/packages/code areas will this work likely touch?",
-		));
-	if (!implementationArea) {
-		notify(ctx, "Usage: /wt update <broad code/module area>", "warning");
+	const dirtyFiles = await getDirtyFiles(pi, git);
+	const existing = currentEntry(readState(git.statePath), git);
+	if (!existing) {
+		notify(ctx, "Run `/wt start <intent>` before `/wt update`.", "warning");
 		return;
 	}
 
-	const dirtyFiles = await getDirtyFiles(pi, git);
+	if (!body && ctx.hasUI) notify(ctx, "Inferring worktree area from this session...", "info");
+	const implementationArea = body || (await inferImplementationArea(ctx, existing, dirtyFiles));
+	if (!implementationArea) {
+		notify(ctx, "Could not infer this worktree's area. Use `/wt update <broad code/module area>`.", "warning");
+		return;
+	}
+
 	const timestamp = now();
 	let updated = false;
 	await updateState(git.statePath, (state) => {
@@ -673,7 +817,7 @@ export default function worktreeCoordinator(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand(COMMAND_NAME, {
-		description: "Coordinate parallel git worktree intent and broad implementation areas without restricting edits",
+		description: "Coordinate parallel git worktree intent and inferred broad implementation areas without restricting edits",
 		getArgumentCompletions(prefix) {
 			const options = ["start ", "update ", "status", "stop", "help"];
 			const filtered = options.filter((value) => value.startsWith(prefix));

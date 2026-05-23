@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -75,8 +75,10 @@ function notificationsEnabled(): boolean {
 
 function writeNotificationsEnabled(enabled: boolean): void {
 	const path = stateFilePath();
+	const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify({ enabled }, null, 2)}\n`, "utf8");
+	writeFileSync(tempPath, `${JSON.stringify({ enabled }, null, 2)}\n`, "utf8");
+	renameSync(tempPath, path);
 }
 
 function readConfig(): PushoverConfig {
@@ -260,10 +262,16 @@ function updatePushoverStatus(ctx: ExtensionContext): void {
 	ctx.ui.setStatus("pushover", ctx.ui.theme.fg("warning", "pushover:off"));
 }
 
+function displayStateFilePath(): string {
+	const home = homedir();
+	const path = stateFilePath();
+	return path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+}
+
 function pushoverStatusMessage(): string {
 	const enabled = notificationsEnabled();
 	const configured = isConfigured(readConfig());
-	return `Pushover notifications: ${enabled ? "on" : "off"}; ${configured ? "configured" : "missing PUSHOVER_APP_TOKEN/PUSHOVER_USER_KEY"}.`;
+	return `Pushover notifications: ${enabled ? "on" : "off"}; ${configured ? "configured" : "missing PUSHOVER_APP_TOKEN/PUSHOVER_USER_KEY"}; state: ${displayStateFilePath()}.`;
 }
 
 export default function pushoverNotify(pi: ExtensionAPI): void {
