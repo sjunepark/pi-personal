@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 const PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json";
@@ -7,6 +10,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_DEBOUNCE_MS = 3000;
 const CMUX_TIMEOUT_MS = 3000;
 const PUSHOVER_TITLE_MAX_LENGTH = 250;
+const STATE_FILE_ENV = "PI_PUSHOVER_STATE_FILE";
 
 type PushoverConfig = {
 	token?: string;
@@ -48,6 +52,32 @@ type PostReviewLoopEntry = {
 };
 
 const POST_REVIEW_LOOP_ENTRY_TYPE = "post-review-loop-state";
+
+function stateFilePath(): string {
+	return firstNonEmpty(process.env[STATE_FILE_ENV]) ?? join(homedir(), ".pi", "agent", "pushover-notify-state.json");
+}
+
+function readStoredEnabled(): boolean | undefined {
+	const path = stateFilePath();
+	if (!existsSync(path)) return undefined;
+
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		return isRecord(parsed) && typeof parsed.enabled === "boolean" ? parsed.enabled : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function notificationsEnabled(): boolean {
+	return readStoredEnabled() !== false;
+}
+
+function writeNotificationsEnabled(enabled: boolean): void {
+	const path = stateFilePath();
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify({ enabled }, null, 2)}\n`, "utf8");
+}
 
 function readConfig(): PushoverConfig {
 	return {
@@ -221,6 +251,21 @@ function showConfigurationWarning(ctx: ExtensionContext): void {
 	ctx.ui.notify("Pushover notifications disabled: set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY", "warning");
 }
 
+function updatePushoverStatus(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) return;
+	if (notificationsEnabled()) {
+		ctx.ui.setStatus("pushover", undefined);
+		return;
+	}
+	ctx.ui.setStatus("pushover", ctx.ui.theme.fg("warning", "pushover:off"));
+}
+
+function pushoverStatusMessage(): string {
+	const enabled = notificationsEnabled();
+	const configured = isConfigured(readConfig());
+	return `Pushover notifications: ${enabled ? "on" : "off"}; ${configured ? "configured" : "missing PUSHOVER_APP_TOKEN/PUSHOVER_USER_KEY"}.`;
+}
+
 export default function pushoverNotify(pi: ExtensionAPI): void {
 	let startedAt = Date.now();
 	let warnedMissingConfig = false;
@@ -231,6 +276,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 	const notifiedPostReviewLoopIds = new Set<string>();
 
 	async function sendCompletion(ctx: ExtensionContext, config: PushoverConfig, completion: CompletionNotification): Promise<void> {
+		if (!notificationsEnabled()) return;
+
 		const baseTitle = completion.title === DEFAULT_TITLE ? config.title : completion.title;
 		const title = formatTitle(baseTitle, await getCmuxWorkspaceName(pi));
 		const notificationKey = `${title}\n${completion.message}`;
@@ -245,7 +292,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (!isConfigured(readConfig()) && !warnedMissingConfig) {
+		updatePushoverStatus(ctx);
+		if (notificationsEnabled() && !isConfigured(readConfig()) && !warnedMissingConfig) {
 			warnedMissingConfig = true;
 			showConfigurationWarning(ctx);
 		}
@@ -279,6 +327,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 			return;
 		}
 
+		if (!notificationsEnabled()) return;
+
 		const config = readConfig();
 		if (!isConfigured(config)) return;
 
@@ -303,16 +353,85 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 		await sendCompletion(ctx, config, completion);
 	});
 
-	pi.registerCommand("pushover-test", {
-		description: "Send a test Pushover notification",
-		handler: async (_args, ctx) => {
-			const config = readConfig();
+	function setPushoverEnabled(enabled: boolean, ctx: ExtensionContext): void {
+		writeNotificationsEnabled(enabled);
+		updatePushoverStatus(ctx);
+		ctx.ui.notify(`Pushover completion notifications ${enabled ? "enabled" : "disabled"}`, "info");
+	}
+
+	async function sendTestNotification(ctx: ExtensionContext): Promise<void> {
+		const config = readConfig();
+		try {
+			await sendPushover(config, config.title, "Test notification from Pi");
+			ctx.ui.notify("Sent Pushover test notification", "info");
+		} catch (error) {
+			reportFailure(ctx, error);
+		}
+	}
+
+	pi.registerCommand("pushover", {
+		description: "Manage Pushover notifications: on, off, status, test",
+		handler: async (args, ctx) => {
+			const action = (args ?? "").trim().toLowerCase();
 			try {
-				await sendPushover(config, config.title, "Test notification from Pi");
-				ctx.ui.notify("Sent Pushover test notification", "info");
+				if (action === "on") {
+					setPushoverEnabled(true, ctx);
+					return;
+				}
+				if (action === "off") {
+					setPushoverEnabled(false, ctx);
+					return;
+				}
+				if (action === "" || action === "status") {
+					updatePushoverStatus(ctx);
+					ctx.ui.notify(pushoverStatusMessage(), "info");
+					return;
+				}
+				if (action === "test") {
+					await sendTestNotification(ctx);
+					return;
+				}
+				ctx.ui.notify("Usage: /pushover on|off|status|test", "warning");
 			} catch (error) {
 				reportFailure(ctx, error);
 			}
+		},
+	});
+
+	pi.registerCommand("pushover-on", {
+		description: "Enable automatic Pushover completion notifications",
+		handler: async (_args, ctx) => {
+			try {
+				setPushoverEnabled(true, ctx);
+			} catch (error) {
+				reportFailure(ctx, error);
+			}
+		},
+	});
+
+	pi.registerCommand("pushover-off", {
+		description: "Disable automatic Pushover completion notifications",
+		handler: async (_args, ctx) => {
+			try {
+				setPushoverEnabled(false, ctx);
+			} catch (error) {
+				reportFailure(ctx, error);
+			}
+		},
+	});
+
+	pi.registerCommand("pushover-status", {
+		description: "Show Pushover notification status",
+		handler: async (_args, ctx) => {
+			updatePushoverStatus(ctx);
+			ctx.ui.notify(pushoverStatusMessage(), "info");
+		},
+	});
+
+	pi.registerCommand("pushover-test", {
+		description: "Send a test Pushover notification",
+		handler: async (_args, ctx) => {
+			await sendTestNotification(ctx);
 		},
 	});
 }
