@@ -534,9 +534,7 @@ function recentConversationText(ctx: ExtensionContext): string {
 	return truncateLine(lines.join("\n"), MAX_INFERENCE_CONTEXT_CHARS);
 }
 
-function fallbackImplementationArea(ctx: ExtensionContext, dirtyFiles: string[]): string | undefined {
-	if (dirtyFiles.length > 0) return compactOneLine(`Touched files: ${dirtyFiles.slice(0, 4).join(", ")}`);
-
+function fallbackImplementationArea(ctx: ExtensionContext, current: WorktreeEntry, dirtyFiles: string[]): string | undefined {
 	const branch = ctx.sessionManager.getBranch();
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const line = formatConversationEntry(branch[i]);
@@ -545,7 +543,9 @@ function fallbackImplementationArea(ctx: ExtensionContext, dirtyFiles: string[])
 		if (text.startsWith("/wt ")) continue;
 		return compactOneLine(text);
 	}
-	return undefined;
+
+	if (dirtyFiles.length > 0) return compactOneLine(`${current.intent}; touched files: ${dirtyFiles.slice(0, 4).join(", ")}`);
+	return compactOneLine(current.intent);
 }
 
 async function inferImplementationArea(
@@ -553,11 +553,11 @@ async function inferImplementationArea(
 	current: WorktreeEntry,
 	dirtyFiles: string[],
 ): Promise<string | undefined> {
-	if (!ctx.model) return fallbackImplementationArea(ctx, dirtyFiles);
+	if (!ctx.model) return fallbackImplementationArea(ctx, current, dirtyFiles);
 
 	try {
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-		if (!auth.ok || !auth.apiKey) return fallbackImplementationArea(ctx, dirtyFiles);
+		if (!auth.ok || !auth.apiKey) return fallbackImplementationArea(ctx, current, dirtyFiles);
 
 		const userMessage: UserMessage = {
 			role: "user",
@@ -592,9 +592,9 @@ async function inferImplementationArea(
 		);
 
 		const text = extractTextContent(response.content, MAX_INFERRED_AREA_CHARS * 2);
-		return text ? compactOneLine(text) : fallbackImplementationArea(ctx, dirtyFiles);
+		return text ? compactOneLine(text) : fallbackImplementationArea(ctx, current, dirtyFiles);
 	} catch {
-		return fallbackImplementationArea(ctx, dirtyFiles);
+		return fallbackImplementationArea(ctx, current, dirtyFiles);
 	}
 }
 
