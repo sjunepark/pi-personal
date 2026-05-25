@@ -13,11 +13,12 @@ type RuntimeOps = {
 type QueuedCheckpoint = {
 	loopId: string;
 	state: LoopState;
-	thinkingLevel: ThinkingLevel;
+	thinkingLevel?: ThinkingLevel;
 	started: boolean;
 };
 
 const COMPACTION_THINKING_LEVEL: ThinkingLevel = "low";
+const COMPACTION_CONTEXT_THRESHOLD_PERCENT = 60;
 
 function clean(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
@@ -80,6 +81,22 @@ function notify(ctx: ExtensionContext, message: string, type: "info" | "warning"
 	if (ctx.hasUI) ctx.ui.notify(message, type);
 }
 
+function formatUsage(usage: ReturnType<ExtensionContext["getContextUsage"]>): string {
+	if (!usage) return "context usage unavailable";
+	const percent = usage.percent === null ? "unknown" : `${usage.percent.toFixed(1)}%`;
+	const tokens = usage.tokens === null ? "unknown tokens" : `${usage.tokens.toLocaleString()} tokens`;
+	return `${percent} (${tokens} / ${usage.contextWindow.toLocaleString()})`;
+}
+
+function shouldCompact(ctx: ExtensionContext): { compact: boolean; reason: string } {
+	const usage = ctx.getContextUsage();
+	if (!usage || usage.percent === null) return { compact: false, reason: `${formatUsage(usage)}; below-threshold checkpoint only` };
+	if (usage.percent <= COMPACTION_CONTEXT_THRESHOLD_PERCENT) {
+		return { compact: false, reason: `${formatUsage(usage)} <= ${COMPACTION_CONTEXT_THRESHOLD_PERCENT}%` };
+	}
+	return { compact: true, reason: `${formatUsage(usage)} > ${COMPACTION_CONTEXT_THRESHOLD_PERCENT}%` };
+}
+
 export class ReviewLoopCompactor {
 	#queued: QueuedCheckpoint | null = null;
 
@@ -87,12 +104,10 @@ export class ReviewLoopCompactor {
 		return this.#queued !== null;
 	}
 
-	queue(pi: ExtensionAPI, ctx: ExtensionContext, state: LoopState): boolean {
+	queue(ctx: ExtensionContext, state: LoopState): boolean {
 		if (this.#queued) return false;
-		const previousLevel = pi.getThinkingLevel();
-		if (previousLevel !== COMPACTION_THINKING_LEVEL) pi.setThinkingLevel(COMPACTION_THINKING_LEVEL);
-		this.#queued = { loopId: state.id, state, thinkingLevel: previousLevel, started: false };
-		notify(ctx, `Post-review-loop checkpoint queued -> ${state.phase}`, "info");
+		this.#queued = { loopId: state.id, state, started: false };
+		notify(ctx, `Post-review-loop checkpoint evaluation queued -> ${state.phase}`, "info");
 		return true;
 	}
 
@@ -108,7 +123,24 @@ export class ReviewLoopCompactor {
 		checkpoint.started = true;
 
 		const restoreThinking = () => {
-			if (pi.getThinkingLevel() === COMPACTION_THINKING_LEVEL && checkpoint.thinkingLevel !== COMPACTION_THINKING_LEVEL) pi.setThinkingLevel(checkpoint.thinkingLevel);
+			if (checkpoint.thinkingLevel !== undefined && pi.getThinkingLevel() === COMPACTION_THINKING_LEVEL && checkpoint.thinkingLevel !== COMPACTION_THINKING_LEVEL) {
+				pi.setThinkingLevel(checkpoint.thinkingLevel);
+			}
+		};
+
+		const markReady = (event: string, message: string) => {
+			this.#queued = null;
+			restoreThinking();
+			const next = runtime.markReady();
+			persist(event);
+			notify(ctx, message, "info");
+			if (next.lifecycle === "paused") {
+				notify(ctx, "Post-review-loop paused after current iteration. Use /post-review-loop resume to continue.", "info");
+				return;
+			}
+			if (next.phase !== "final-report") {
+				pi.sendUserMessage(phasePrompt(next, next.phase, { currentFingerprint: computeWorktreeFingerprint(ctx.cwd, fingerprintFiles(next)) }), { deliverAs: "followUp" });
+			}
 		};
 
 		const fail = (error: unknown) => {
@@ -123,29 +155,25 @@ export class ReviewLoopCompactor {
 			});
 		};
 
+		const decision = shouldCompact(ctx);
+		if (!decision.compact) {
+			markReady("checkpoint-skipped", `Post-review-loop checkpoint compaction skipped: ${decision.reason}`);
+			return;
+		}
+
 		if (typeof ctx.compact !== "function") {
 			fail("ctx.compact is unavailable");
 			return;
 		}
 
-		notify(ctx, "Post-review-loop checkpoint compaction started", "info");
+		checkpoint.thinkingLevel = pi.getThinkingLevel();
+		if (checkpoint.thinkingLevel !== COMPACTION_THINKING_LEVEL) pi.setThinkingLevel(COMPACTION_THINKING_LEVEL);
+
+		notify(ctx, `Post-review-loop checkpoint compaction started: ${decision.reason}`, "info");
 		try {
 			ctx.compact({
 				customInstructions: buildCompactionInstructions(checkpoint.state),
-				onComplete: () => {
-					this.#queued = null;
-					restoreThinking();
-					const next = runtime.markReady();
-					persist("checkpoint-completed");
-					notify(ctx, "Post-review-loop checkpoint compaction completed", "info");
-					if (next.lifecycle === "paused") {
-						notify(ctx, "Post-review-loop paused after current iteration. Use /post-review-loop resume to continue.", "info");
-						return;
-					}
-					if (next.phase !== "final-report") {
-						pi.sendUserMessage(phasePrompt(next, next.phase, { currentFingerprint: computeWorktreeFingerprint(ctx.cwd, fingerprintFiles(next)) }), { deliverAs: "followUp" });
-					}
-				},
+				onComplete: () => markReady("checkpoint-completed", "Post-review-loop checkpoint compaction completed"),
 				onError: fail,
 			});
 		} catch (error) {
@@ -155,7 +183,7 @@ export class ReviewLoopCompactor {
 
 	clear(pi: ExtensionAPI): void {
 		const checkpoint = this.#queued;
-		if (checkpoint && pi.getThinkingLevel() === COMPACTION_THINKING_LEVEL && checkpoint.thinkingLevel !== COMPACTION_THINKING_LEVEL) {
+		if (checkpoint?.thinkingLevel !== undefined && pi.getThinkingLevel() === COMPACTION_THINKING_LEVEL && checkpoint.thinkingLevel !== COMPACTION_THINKING_LEVEL) {
 			pi.setThinkingLevel(checkpoint.thinkingLevel);
 		}
 		this.#queued = null;

@@ -353,7 +353,7 @@ function statusMarkdown(state: LoopState | null, options: { full?: boolean; curr
 function requiredNextAction(state: LoopState): string {
 	const control = controlRequestText(state.controlRequest);
 	if (state.lifecycle === "complete") return "No further post-review-loop action is required. The final report has been rendered or is available from post_review_loop_get_state and /post-review-loop report.";
-	if (state.lifecycle === "checkpointing") return control ? `Stop substantial work and wait for checkpoint compaction to finish; pending request: ${control}.` : "Stop substantial work and wait for checkpoint compaction to finish.";
+	if (state.lifecycle === "checkpointing") return control ? `Stop substantial work and wait for checkpoint evaluation to finish; pending request: ${control}.` : "Stop substantial work and wait for checkpoint evaluation to finish.";
 	if (state.lifecycle === "paused") return "Resume the loop before submitting another phase result.";
 	if (state.phase === "final-report") return "Render or inspect the final report.";
 	return `Complete ${state.phase} iteration ${state.iteration}, then call post_review_loop_submit_phase_result.${control ? ` Pending request: ${control}.` : ""}`;
@@ -727,21 +727,21 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 					return textToolResult(`Post-review-loop stopped. Final report:\n\n${report}`, compactToolDetails(runtime.state, { gate, report }), false, true);
 				}
 
-				const queued = compactor.queue(pi, ctx, state);
+				const queued = compactor.queue(ctx, state);
 				persist(pi, ctx, queued ? "checkpoint-queued" : "checkpoint-queue-rejected");
 				if (!queued) return textToolResult("A checkpoint is already pending. Stop substantial work and wait for the next phase prompt.", compactToolDetails(state, { gate }), true, true);
 				const willPause = pauseAfterCheckpoint(state);
 				return textToolResult(
 					willPause
-						? "Phase result accepted. Current iteration completed; checkpoint compaction is queued and the loop will pause before the next phase prompt."
-						: `Phase result accepted. Gate decision: continue to ${gate.nextPhase}. Checkpoint compaction is queued; stop substantial work for this turn.`,
+						? "Phase result accepted. Current iteration completed; checkpoint evaluation is queued and the loop will pause before the next phase prompt. Compaction will run only if context usage is over 60%."
+						: `Phase result accepted. Gate decision: continue to ${gate.nextPhase}. Checkpoint evaluation is queued; compaction will run only if context usage is over 60%. Stop substantial work for this turn.`,
 					compactToolDetails(state, {
 						gate,
 						checkpointPending: true,
 						notify: {
 							suppressCompletion: true,
 							status: willPause ? "Pausing" : "Continuing",
-							logMessage: willPause ? "Post-review-loop iteration accepted; checkpoint compaction is queued before pause" : "Post-review-loop phase accepted; checkpoint compaction is queued",
+							logMessage: willPause ? "Post-review-loop iteration accepted; checkpoint evaluation is queued before pause" : "Post-review-loop phase accepted; checkpoint evaluation is queued",
 						},
 					}),
 					false,

@@ -65,6 +65,7 @@ const FULL_STATE_EVENTS = new Set([
 	"started",
 	"phase-submitted",
 	"checkpoint-completed",
+	"checkpoint-skipped",
 	"checkpoint-failed",
 	"checkpoint-restored-paused",
 	"reload-paused",
