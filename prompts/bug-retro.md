@@ -35,17 +35,24 @@ Answer these questions with evidence from the code and observed failure:
    - Recommend about 3 solutions total. Do not list every possible option.
    - Prefer the strongest practical options: one immediate fix, one small low-risk hardening/refactor, and one larger design direction only if it is genuinely worth discussing.
    - Use prose subsections with headings, not a table.
-   - For each recommended solution, explain briefly:
+   - For each solution, put its implementation status in the heading using exactly one of these labels:
+     - `[applied]` for fixes or refactors already made in the inspected edits or applied during this response.
+     - `[recommended now]` for work you recommend doing next but have not implemented.
+     - `[deferred]` for worthwhile work that should not be done now.
+     - `[discussion only]` for ideas that need a product, domain, or maintainability decision before implementation.
+   - Do not call already-applied work `[recommended now]`. If it is both correct and already done, label it `[applied]` and say to keep it.
+   - For each solution, explain briefly:
      - what invariant or boundary it strengthens
      - how it prevents this class of bug
      - main benefits
      - main tradeoffs or practical limits
      - effort/risk/payoff in plain language
-   - Clearly mark whether each solution is recommended now, deferred, or only worth discussing.
    - Prefer making invalid states unrepresentable over adding defensive patches.
 
 4. What should we do next?
-   - Give a clear recommendation: keep the local fix, patch further, refactor now, or defer.
+   - Give a clear recommendation that separates already-completed work from remaining work.
+   - Explicitly say which applied patches should be kept, if any.
+   - Explicitly say which recommended-now patches remain unapplied, if any.
    - If a fix or refactor is obvious, low-risk, and within the current task scope, apply the patch instead of only proposing it.
    - If tradeoffs require product, domain, or maintainability judgment, ask for a decision instead of silently changing direction.
 
@@ -58,13 +65,15 @@ Use this output shape:
 
 ## Robustness improvements
 
-### 1. <recommended solution heading>
+### 1. [applied|recommended now|deferred|discussion only] <solution heading>
 
-### 2. <recommended solution heading>
+### 2. [applied|recommended now|deferred|discussion only] <solution heading>
 
-### 3. <recommended solution heading, optional if only two are warranted>
+### 3. [applied|recommended now|deferred|discussion only] <solution heading, optional if only two are warranted>
 
-## Applied patch, if any
+## Applied patches to keep, if any
+
+## Remaining recommended work, if any
 
 ## Recommended next step
 
