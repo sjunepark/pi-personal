@@ -99,6 +99,8 @@ function shouldCompact(ctx: ExtensionContext): { compact: boolean; reason: strin
 
 export class ReviewLoopCompactor {
 	#queued: QueuedCheckpoint | null = null;
+	#scheduledPrompt: ReturnType<typeof setTimeout> | null = null;
+	#scheduleVersion = 0;
 
 	get pending(): boolean {
 		return this.#queued !== null;
@@ -115,6 +117,28 @@ export class ReviewLoopCompactor {
 		if (!this.#queued) return undefined;
 		if (toolName === "post_review_loop_submit_phase_result") return "Post-review-loop checkpoint is already pending.";
 		return "Post-review-loop checkpoint is pending; finish the turn without more tool calls.";
+	}
+
+	#clearScheduledPrompt(): void {
+		this.#scheduleVersion += 1;
+		if (!this.#scheduledPrompt) return;
+		clearTimeout(this.#scheduledPrompt);
+		this.#scheduledPrompt = null;
+	}
+
+	#sendUserMessageWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, message: string): void {
+		this.#clearScheduledPrompt();
+		const scheduleVersion = this.#scheduleVersion;
+		const poll = () => {
+			if (scheduleVersion !== this.#scheduleVersion) return;
+			if (!ctx.isIdle()) {
+				this.#scheduledPrompt = setTimeout(poll, 25);
+				return;
+			}
+			this.#scheduledPrompt = null;
+			pi.sendUserMessage(message);
+		};
+		this.#scheduledPrompt = setTimeout(poll, 25);
 	}
 
 	runAfterAgent(pi: ExtensionAPI, ctx: ExtensionContext, runtime: RuntimeOps, persist: PersistFn): void {
@@ -140,7 +164,7 @@ export class ReviewLoopCompactor {
 				return;
 			}
 			if (next.phase !== "final-report") {
-				pi.sendUserMessage(phasePrompt(next, next.phase, { currentFingerprint: computeWorktreeFingerprint(ctx.cwd, fingerprintFiles(next)) }), { deliverAs: "followUp" });
+				this.#sendUserMessageWhenIdle(pi, ctx, phasePrompt(next, next.phase, { currentFingerprint: computeWorktreeFingerprint(ctx.cwd, fingerprintFiles(next)) }));
 			}
 		};
 
@@ -152,9 +176,7 @@ export class ReviewLoopCompactor {
 			runtime.markFailed(message);
 			persist("checkpoint-failed");
 			notify(ctx, `Post-review-loop compaction failed: ${message}`, "error");
-			pi.sendUserMessage(`Post-review-loop compaction failed: ${message}\n\nThe loop is paused. Use /post-review-loop resume to continue or /post-review-loop stop to finish.`, {
-				deliverAs: "followUp",
-			});
+			this.#sendUserMessageWhenIdle(pi, ctx, `Post-review-loop compaction failed: ${message}\n\nThe loop is paused. Use /post-review-loop resume to continue or /post-review-loop stop to finish.`);
 		};
 
 		const decision = shouldCompact(ctx);
@@ -188,6 +210,7 @@ export class ReviewLoopCompactor {
 		if (checkpoint?.thinkingLevel !== undefined && pi.getThinkingLevel() === COMPACTION_THINKING_LEVEL && checkpoint.thinkingLevel !== COMPACTION_THINKING_LEVEL) {
 			pi.setThinkingLevel(checkpoint.thinkingLevel);
 		}
+		this.#clearScheduledPrompt();
 		this.#queued = null;
 	}
 }
