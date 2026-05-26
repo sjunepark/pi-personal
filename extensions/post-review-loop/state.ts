@@ -55,7 +55,7 @@ export function latestStateFromSession(ctx: ExtensionContext): LoopState | null 
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = entries[index] as { type?: string; customType?: string; data?: Partial<LoopEntry> };
 		if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
-		if (entry.data?.event === "cleared") return null;
+		if (entry.data?.event === "cleared" || entry.data?.event === "cancelled") return null;
 		if (isLoopState(entry.data?.state)) return normalizeState(clone(entry.data.state));
 	}
 	return null;

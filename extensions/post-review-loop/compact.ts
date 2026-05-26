@@ -129,6 +129,7 @@ export class ReviewLoopCompactor {
 		};
 
 		const markReady = (event: string, message: string) => {
+			if (this.#queued !== checkpoint) return;
 			this.#queued = null;
 			restoreThinking();
 			const next = runtime.markReady();
@@ -144,6 +145,7 @@ export class ReviewLoopCompactor {
 		};
 
 		const fail = (error: unknown) => {
+			if (this.#queued !== checkpoint) return;
 			this.#queued = null;
 			restoreThinking();
 			const message = getErrorMessage(error);

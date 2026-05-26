@@ -460,6 +460,18 @@ function renderReportOnly(options: { full?: boolean } = {}): string {
 	return state.lifecycle === "complete" || state.phase === "final-report" ? renderFinalReport(state, options) : renderCurrentReport(state, options);
 }
 
+function cancelLoop(pi: ExtensionAPI, ctx: ExtensionContext): { hadState: boolean; hadPendingCheckpoint: boolean; abortedAgent: boolean } {
+	const hadPendingCheckpoint = compactor.pending;
+	const previous = runtime.clear();
+	const hadState = Boolean(previous);
+	if (!hadState && !hadPendingCheckpoint) return { hadState, hadPendingCheckpoint, abortedAgent: false };
+
+	compactor.clear(pi);
+	pendingMarkdownMessages.splice(0);
+	persist(pi, ctx, "cancelled");
+	return { hadState, hadPendingCheckpoint, abortedAgent: !ctx.isIdle() };
+}
+
 const BUCKET_I_STATUSES: BucketIStatus[] = ["candidate", "accepted", "applied", "rejected", "remaining", "downgraded"];
 const BUCKET_II_STATUSES: BucketIIStatus[] = ["left for user decision", "deferred", "kept as-is for now", "implemented after explicit approval"];
 const BUCKET_I_STATUS_BY_KEY = new Map<string, BucketIStatus>(BUCKET_I_STATUSES.map((status): [string, BucketIStatus] => [status, status]));
@@ -560,6 +572,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				"pause",
 				"resume",
 				"stop",
+				"cancel",
 				"report",
 				"report --full",
 				"clear",
@@ -583,6 +596,21 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				const previous = runtime.clear();
 				persist(pi, ctx, "cleared");
 				notify(ctx, previous ? "Post-review-loop state cleared." : "No post-review-loop state to clear.", "info");
+				return;
+			}
+
+			if (subcommand === "cancel") {
+				const result = cancelLoop(pi, ctx);
+				if (!result.hadState && !result.hadPendingCheckpoint) {
+					notify(ctx, "No post-review-loop state to cancel.", "info");
+					return;
+				}
+				notify(
+					ctx,
+					`Post-review-loop cancelled and state cleared.${result.hadPendingCheckpoint ? " Pending checkpoint discarded." : ""}${result.abortedAgent ? " Active agent turn aborted." : ""}`,
+					"info",
+				);
+				if (result.abortedAgent) ctx.abort();
 				return;
 			}
 
@@ -662,7 +690,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				return;
 			}
 
-			notify(ctx, `Unknown subcommand: ${subcommand}. Use oneshot, start, status, pause, resume, stop, report, or clear.`, "warning");
+			notify(ctx, `Unknown subcommand: ${subcommand}. Use oneshot, start, status, pause, resume, stop, cancel, report, or clear.`, "warning");
 		},
 	});
 }

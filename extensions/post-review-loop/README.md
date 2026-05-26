@@ -11,6 +11,7 @@ Pi extension that owns the post-implementation review loop workflow.
 /post-review-loop pause
 /post-review-loop resume
 /post-review-loop stop
+/post-review-loop cancel
 /post-review-loop report [--full]
 /post-review-loop clear
 ```
@@ -28,7 +29,7 @@ The model supplies phase findings, validation, submitted phase-scope files, and 
 ## Current v1 policies
 
 - `/post-review-loop start` without a scope defaults to reviewing uncommitted changes. Provide a scope argument to review a different diff, branch, commit range, or implementation target.
-- `/post-review-loop stop` and `/post-review-loop pause` are graceful drain requests: they let the currently requested iteration finish instead of aborting the active phase. `stop` renders the final report after that iteration; `pause` pauses before the next iteration prompt. Use `/post-review-loop clear` to remove state entirely.
+- `/post-review-loop stop` and `/post-review-loop pause` are graceful drain requests: they let the currently requested iteration finish instead of aborting the active phase. `stop` renders the final report after that iteration; `pause` pauses before the next iteration prompt. Use `/post-review-loop cancel` to immediately abort any active turn, discard pending checkpoint work, and clear loop state. Use `/post-review-loop clear` to remove state without treating it as an active cancellation.
 - Git integration is deterministic and local-only. On start, the extension records the starting `HEAD`; if the worktree is dirty, it runs `git add -A` and creates a temporary `checkpoint(post-review-loop): before review` commit by default. Use `--no-git-checkpoint` to record only.
 - After creating that temporary commit, the first phase prompt tells the agent to run `git commit --amend` with an ordinary project commit message before continuing, so interrupted loops do not leave checkpoint subjects in history.
 - When the default `uncommitted changes` scope is checkpointed, the review scope becomes `ORIGINAL_HEAD..CHECKPOINT_HEAD` so the loop reviews the committed implementation boundary.
