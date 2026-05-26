@@ -575,7 +575,6 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				"cancel",
 				"report",
 				"report --full",
-				"clear",
 			];
 			const filtered = options.filter((value) => value.startsWith(prefix));
 			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
@@ -588,14 +587,6 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			if (subcommand === "status") {
 				const state = runtime.state;
 				showMarkdownMessage(pi, ctx, "Post-review-loop status", statusMarkdown(state, { full: rest.includes("--full"), currentFingerprint: currentFingerprintForState(ctx, state) }));
-				return;
-			}
-
-			if (subcommand === "clear") {
-				compactor.clear(pi);
-				const previous = runtime.clear();
-				persist(pi, ctx, "cleared");
-				notify(ctx, previous ? "Post-review-loop state cleared." : "No post-review-loop state to clear.", "info");
 				return;
 			}
 
@@ -690,7 +681,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				return;
 			}
 
-			notify(ctx, `Unknown subcommand: ${subcommand}. Use oneshot, start, status, pause, resume, stop, cancel, report, or clear.`, "warning");
+			notify(ctx, `Unknown subcommand: ${subcommand}. Use oneshot, start, status, pause, resume, stop, cancel, or report.`, "warning");
 		},
 	});
 }
