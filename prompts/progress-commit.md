@@ -1,9 +1,9 @@
 ---
-description: Update stale plan/TODO docs for finished work, then commit
+description: Update stale progress docs, then commit
 argument-hint: "[task or commit context]"
 ---
 
-Finish the current task by updating relevant planning docs, then commit the work.
+Update only the progress documentation relevant to the completed work, then commit.
 
 Context: `$ARGUMENTS`
 
@@ -11,7 +11,8 @@ Context: `$ARGUMENTS`
    - `git status --short`
    - unstaged and staged diffs
    - current branch
-2. Identify the relevant planning documents for this task. Check root and nearby docs named like `PLAN.md`, `TODO.md`, `ROADMAP.md`, task plans, or feature-specific plan files.
+2. Identify only the planning documents relevant to this task. Repositories may have multiple `PLAN.md`, `TODO.md`, `ROADMAP.md`, task-plan, or feature-plan files; update the one(s) tied to the changed area, not every progress doc in the repo.
+   - Check root-level docs and docs colocated with the changed files or feature.
    - If no relevant planning doc exists, do not create one just for this command.
    - If several are plausible and the right one is unclear, ask before editing.
 3. Update stale planning or to-do info only where it is directly supported by the completed work:
