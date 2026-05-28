@@ -1,17 +1,17 @@
 ---
 description: Carefully integrate another branch without blind git merge behavior
-argument-hint: "<branch> [--dry-run]"
+argument-hint: "<branch> [dry]"
 ---
 
 Carefully integrate source branch `$1` into the current destination branch.
 
-Invoke as `/merge <branch> [--dry-run]`. Treat `$1` as the source branch and `${@:2}` as optional flags. If `$1` is missing or starts with `-`, stop and ask for the source branch before inspecting or merging.
+Invoke as `/merge <branch> [dry]`. Treat `$1` as the source branch and `${@:2}` as optional flags. If `$1` is missing or starts with `-`, stop and ask for the source branch before inspecting or merging.
 
-Requested flags: `${@:2}`. Accept `--dry-run` as a planning-only mode.
+Requested flags: `${@:2}`. Accept `dry` as a planning-only mode.
 
 Operate in strict conservative mode. Do not blindly run and commit `git merge $1`, do not accept append-style or conflict-marker-driven results, and do not infer user intent from incomplete evidence.
 
-If `--dry-run` is present in the requested flags, analyze the merge without changing repository state:
+If `dry` is present in the requested flags, analyze the merge without changing repository state:
 
 - Do not run `git merge`, edit files, stage changes, commit, or otherwise mutate the working tree.
 - Use read-only git inspection commands to compare destination `HEAD`, source `$1`, and their merge-base.
@@ -19,10 +19,10 @@ If `--dry-run` is present in the requested flags, analyze the merge without chan
 - Propose one or more merge strategies with concrete tradeoffs.
 - Stop after asking the user how to continue; do not proceed into an actual merge until explicitly instructed.
 
-Convergence is required for real whole-branch integrations. In dry-run mode, record and report the same anchors, but do not create convergence yet:
+Convergence is required for real whole-branch integrations. In dry mode, record and report the same anchors, but do not create convergence yet:
 
 - Record the merge anchors before editing or planning: destination `HEAD`, source tip, and merge-base.
-- Unless `--dry-run` is requested, default to `git merge --no-commit --no-ff $1` so the final destination commit records `$1` as a merge parent while still letting you inspect, edit, and validate the result before committing.
+- Unless `dry` is requested, default to `git merge --no-commit --no-ff $1` so the final destination commit records `$1` as a merge parent while still letting you inspect, edit, and validate the result before committing.
 - If a real merge is started, confirm `MERGE_HEAD` exists and matches the intended source tip. If it does not, stop and resolve the merge-shape problem before editing conflicts.
 - Do not integrate by cherry-picking, copying patches, squashing, or creating an ordinary independent commit unless the user explicitly requests that non-convergent history or the source branch should not be recorded as merged.
 - Before reporting completion of a real integration, verify `git merge-base --is-ancestor $1 HEAD`. If it fails, the branches have not converged; either convert the work into a real merge or ask the user how to proceed.
@@ -36,7 +36,7 @@ Instead:
    - file-level diff
    - relevant changed code paths
 3. Understand the intent of both branches from evidence, not guesses.
-4. If not in dry-run mode, use the merge result as a draft for whole-branch integration, then integrate only changes whose intent and destination are clear. In dry-run mode, use the branch diffs and merge-base analysis to describe likely integration work instead.
+4. If not in dry mode, use the merge result as a draft for whole-branch integration, then integrate only changes whose intent and destination are clear. In dry mode, use the branch diffs and merge-base analysis to describe likely integration work instead.
 5. Prefer coherent edits/refactors over mechanical merge output.
    - When both branches changed the same concept, pause before resolving mechanically. Consider whether the correct merge is a small refactor that creates one coherent owner, model, or execution path.
    - Prefer one clear path over duplicated helpers, parallel abstractions, dual sources of truth, compatibility shims, or side-by-side behavior unless a real rollout or compatibility constraint requires them.
@@ -57,7 +57,7 @@ Instead:
    - tests, docs, examples, changelogs, TODO/PLAN/ROADMAP files, and user-facing copy
 10. Do not delete, skip, loosen, or rewrite tests merely to make the merge pass. Only change tests when the merged behavior intentionally changed and the branch evidence supports that change.
 11. If clarification is needed, stop with the question before summarizing the merge as complete.
-12. Run relevant tests, typecheck, lint, or build commands if available after safe integration work. In dry-run mode, do not run expensive or mutating validation; list the checks that should run during the real merge.
+12. Run relevant tests, typecheck, lint, or build commands if available after safe integration work. In dry mode, do not run expensive or mutating validation; list the checks that should run during the real merge.
 13. Before reporting completion, do a short self-review for:
    - source behavior accidentally omitted
    - destination behavior accidentally regressed
@@ -67,15 +67,15 @@ Instead:
    - validation gaps or unrun relevant checks
 14. Summarize:
    - destination branch, source branch, and merge-base
-   - requested mode: dry-run planning or real integration
+   - requested mode: dry planning or real integration
    - whether a real merge commit was used, or why non-convergent history was explicitly requested
-   - convergence verification result, or why it is intentionally not applicable in dry-run mode
-   - what was integrated, or what would be integrated in dry-run mode
-   - files changed, or files likely to change in dry-run mode
+   - convergence verification result, or why it is intentionally not applicable in dry mode
+   - what was integrated, or what would be integrated in dry mode
+   - files changed, or files likely to change in dry mode
    - merge decisions made
    - clarifications requested or still pending
    - remaining risks
-   - in dry-run mode, recommended next steps and the exact user decision needed before starting the merge
+   - in dry mode, recommended next steps and the exact user decision needed before starting the merge
 
 Source branch to integrate: `$1`
 Requested flags: `${@:2}`
