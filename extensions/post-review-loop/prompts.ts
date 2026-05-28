@@ -209,16 +209,33 @@ ${renderLedgerSummary(state, phase)}
 ${reusableEvidenceSection(state, currentFingerprint)}`;
 }
 
-function needsBaselineCommitMessageAmend(state: LoopState): boolean {
+function needsLegacyBaselineCommitMessageAmend(state: LoopState): boolean {
 	return state.baseline.createdCommit && state.baseline.mode === "created-before-review" && state.phasesRun.length === 0;
 }
 
-function baselineCommitMessageAmendInstruction(state: LoopState): string {
-	if (!needsBaselineCommitMessageAmend(state)) return "";
+function legacyBaselineCommitMessageAmendInstruction(state: LoopState): string {
+	if (!needsLegacyBaselineCommitMessageAmend(state)) return "";
 	return `First, before doing any review work, fix the temporary git checkpoint commit message.
 - Inspect the committed changes enough to write a normal project commit message.
 - Run git commit --amend so HEAD no longer uses \`checkpoint(post-review-loop): before review\` or mentions checkpointing/post-review-loop automation.
 - Use an ordinary subject/body that describes the actual project change, then continue with the phase task.`;
+}
+
+function needsSelectiveBaselineCheckpoint(state: LoopState): boolean {
+	return state.baseline.mode === "agent-selected-before-review" && state.phasesRun.length === 0 && state.baseline.scopedFiles.length > 0;
+}
+
+function selectiveBaselineCheckpointInstruction(state: LoopState): string {
+	if (!needsSelectiveBaselineCheckpoint(state)) return "";
+	const originalRef = state.baseline.originalRef ?? state.baseline.ref;
+	return `First, before doing any review work, create a selective git checkpoint for the requested review target.
+- Inspect git status, staged changes, unstaged changes, untracked files, and the requested scope.
+- Commit only the uncommitted changes that are relevant to this review target. You may stage partial hunks when a file mixes relevant and unrelated work.
+- Leave unrelated files or hunks uncommitted; do not discard or rewrite unrelated work.
+- Use your best judgment without asking the user when relevance is ambiguous. Report what you intentionally left out in the phase summary or rejected/kept-as-is notes when useful.
+- Write a normal project commit message that describes the selected change. Do not mention checkpointing, the loop, or automation.
+- If no uncommitted changes clearly belong to the review target, do not commit; continue the review against the requested scope.
+- If you do commit selected changes, treat ${originalRef}..HEAD as the primary reviewed implementation boundary for this first pass, plus any explicitly relevant uncommitted leftovers.`;
 }
 
 function coreRules(state: LoopState): string {
@@ -229,7 +246,7 @@ function coreRules(state: LoopState): string {
 	return `Rules:
 - Inspect real files and diffs before submitting; do not rely only on this prompt.
 - You may cite still-current evidence when the extension-provided fingerprint/file hashes match; re-inspect files changed since that evidence and any new dependencies.
-- For default uncommitted-change scope, inspect staged changes, unstaged changes, and untracked files unless a narrower target or unchanged current fingerprint narrows the repeat check.
+- For default uncommitted-change scope, inspect staged changes, unstaged changes, and untracked files unless a narrower target or unchanged current fingerprint narrows the repeat check. If you created a selective first-pass checkpoint commit, review the original HEAD..current HEAD commit range as the primary target and inspect remaining dirty work only for relevance.
 - Bucket I = concrete, safe, in-scope, root-cause fixable now, and auto-fix-track.
 - Bucket II = real decisions needing user/product/architecture judgment; do not implement without explicit approval.
 - Reject speculative polish, preferences, broad rewrites, and future-proofing.
@@ -253,8 +270,8 @@ function schemaReminder(): string {
 
 export function phasePrompt(state: LoopState, phase: Phase = state.phase as Phase, options: { currentFingerprint?: WorktreeFingerprint } = {}): string {
 	const header = commonHeader(state, phase, options.currentFingerprint);
-	const amendInstruction = baselineCommitMessageAmendInstruction(state);
-	const firstAction = amendInstruction ? `\n\n${amendInstruction}` : "";
+	const firstInstruction = legacyBaselineCommitMessageAmendInstruction(state) || selectiveBaselineCheckpointInstruction(state);
+	const firstAction = firstInstruction ? `\n\n${firstInstruction}` : "";
 	const matrix = stateMatrixChecklist(state);
 	if (phase === "post-review") {
 		return `${header}${firstAction}

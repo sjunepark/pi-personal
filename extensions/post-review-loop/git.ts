@@ -5,7 +5,6 @@ import { relative, resolve } from "node:path";
 import type { AfterReviewCommitState, BaselineState, CommitMessage, LoopState, ValidationResult, WorktreeFingerprint } from "./types.js";
 
 const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
-const BEFORE_REVIEW_SUBJECT = "checkpoint(post-review-loop): before review";
 const NON_PROJECT_COMMIT_MESSAGE_PATTERN = /\bcheckpoint(?:ing)?\b|post-review-loop|post review loop/i;
 
 type BaselineOptions = { checkpoint: boolean };
@@ -114,11 +113,13 @@ function finalCommitMessage(state: LoopState): CommitMessage {
 	return ordinaryProjectCommitMessage(fallback) ?? { subject: "feat: update reviewed implementation" };
 }
 
-function commit(cwd: string, message: CommitMessage, options: { amend?: boolean } = {}): void {
+function commit(cwd: string, message: CommitMessage, options: { amend?: boolean; files?: string[] } = {}): void {
 	const args = ["commit"];
 	if (options.amend) args.push("--amend");
 	args.push("-m", message.subject);
 	if (message.body?.trim()) args.push("-m", message.body.trim());
+	const files = options.files?.length ? unique(options.files).map((file) => safeRepoPath(cwd, file)).filter((file): file is string => Boolean(file)) : [];
+	if (files.length) args.push("--", ...files);
 	git(cwd, args);
 }
 
@@ -127,12 +128,15 @@ function assertSafeToCreateCheckpoint(cwd: string): void {
 	if (safeGit(cwd, ["rev-parse", "--verify", "REBASE_HEAD"])) throw new Error("Cannot create a post-review-loop checkpoint during an active rebase.");
 }
 
-function stageAll(cwd: string): void {
-	git(cwd, ["add", "-A"]);
+function stageFiles(cwd: string, files: string[]): void {
+	const cleaned = unique(files).map((file) => safeRepoPath(cwd, file)).filter((file): file is string => Boolean(file));
+	if (!cleaned.length) return;
+	git(cwd, ["add", "--", ...cleaned]);
 }
 
-function hasStagedChanges(cwd: string): boolean {
-	return !gitQuiet(cwd, ["diff", "--cached", "--quiet", "--"]);
+function hasStagedChanges(cwd: string, files?: string[]): boolean {
+	const cleaned = files?.length ? unique(files).map((file) => safeRepoPath(cwd, file)).filter((file): file is string => Boolean(file)) : [];
+	return !gitQuiet(cwd, ["diff", "--cached", "--quiet", "--", ...cleaned]);
 }
 
 function isCurrentHead(cwd: string, ref: string | undefined): boolean {
@@ -140,8 +144,9 @@ function isCurrentHead(cwd: string, ref: string | undefined): boolean {
 	return safeGit(cwd, ["rev-parse", "--short", "HEAD"]) === ref;
 }
 
-function afterReviewFiles(state: LoopState, statusFiles: string[]): string[] {
-	return unique([...state.baseline.scopedFiles, ...loopEditedFiles(state), ...statusFiles]);
+function afterReviewFiles(state: LoopState): string[] {
+	const baselineFiles = state.baseline.createdCommit ? state.baseline.scopedFiles : [];
+	return unique([...baselineFiles, ...loopEditedFiles(state)]);
 }
 
 function shouldReplaceDefaultScope(scope: string): boolean {
@@ -280,43 +285,14 @@ export function establishBaseline(cwd: string, scope: string, options: BaselineO
 		};
 	}
 
-	assertSafeToCreateCheckpoint(cwd);
-	stageAll(cwd);
-	if (!hasStagedChanges(cwd)) {
-		return {
-			ref: originalRef,
-			mode: "existing-head",
-			createdCommit: false,
-			scopedFiles,
-			notes: `${scopeNote} Dirty status cleared after staging; no checkpoint commit was created.`,
-			originalRef,
-		};
-	}
-
-	commit(cwd, {
-		subject: BEFORE_REVIEW_SUBJECT,
-		body: [
-			"Created automatically by post-review-loop before review edits.",
-			`Original HEAD: ${originalRef}`,
-			`Requested scope: ${clean(scope) || "none"}`,
-			frozenScope.reviewScope ? `Frozen review scope: ${clean(frozenScope.reviewScope)}` : undefined,
-			"",
-			"Checkpoint files:",
-			bulletList(scopedFiles),
-		]
-			.filter((line): line is string => line !== undefined)
-			.join("\n"),
-	});
-	const checkpointRef = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
 	return {
-		ref: checkpointRef,
-		mode: "created-before-review",
-		createdCommit: true,
+		ref: originalRef,
+		mode: "agent-selected-before-review",
+		createdCommit: false,
 		scopedFiles,
-		notes: `${scopeNote} Created before-review checkpoint commit ${checkpointRef} from ${originalRef}.${frozenScope.reviewScope ? ` Frozen review scope: ${frozenScope.reviewScope}.` : ""}`,
+		notes: `${scopeNote} Dirty scoped files recorded. The first phase prompt asks the agent to create a selective ordinary project commit for only the review-relevant uncommitted changes, leaving unrelated work uncommitted.`,
 		originalRef,
-		checkpointRef,
-		reviewScope: shouldReplaceDefaultScope(scope) ? `${originalRef}..${checkpointRef}` : frozenScope.reviewScope,
+		reviewScope: frozenScope.reviewScope,
 	};
 }
 
@@ -355,12 +331,11 @@ export function createAfterReviewCommit(cwd: string, state: LoopState): AfterRev
 	if (normalized.mode !== "left-uncommitted" && !(normalized.mode === "not-needed" && canAmendBaseline)) return normalized;
 
 	assertSafeToCreateCheckpoint(cwd);
-	const filesBeforeStage = scopedFilesFromStatus(cwd);
-	const files = afterReviewFiles(state, filesBeforeStage);
+	const files = afterReviewFiles(state);
 	const message = finalCommitMessage(state);
 
 	if (canAmendBaseline) {
-		if (normalized.mode === "left-uncommitted") stageAll(cwd);
+		if (normalized.mode === "left-uncommitted") stageFiles(cwd, loopEditedFiles(state));
 		commit(cwd, message, { amend: true });
 		const ref = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
 		return {
@@ -371,10 +346,11 @@ export function createAfterReviewCommit(cwd: string, state: LoopState): AfterRev
 		};
 	}
 
-	if (!filesBeforeStage.length) return { ref: "None", mode: "not-needed", files: [] };
-	stageAll(cwd);
-	if (!hasStagedChanges(cwd)) return { ref: "None", mode: "not-needed", files };
-	commit(cwd, message);
+	const editedFiles = loopEditedFiles(state);
+	if (!editedFiles.length) return { ref: "None", mode: "not-needed", files: [] };
+	stageFiles(cwd, editedFiles);
+	if (!hasStagedChanges(cwd, editedFiles)) return { ref: "None", mode: "not-needed", files };
+	commit(cwd, message, { files: editedFiles });
 	const ref = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
 	return { ref, mode: "created-after-review", files, notes: "Created a normal project commit for applied review-loop changes." };
 }

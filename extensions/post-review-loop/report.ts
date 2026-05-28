@@ -5,6 +5,7 @@ const BASELINE_MODE_LABELS: Record<string, string> = {
 	"existing-head": "Existing HEAD recorded as before-review baseline",
 	"created-before-review": "Before-review commit created",
 	"amended-before-review": "Existing before-review commit amended",
+	"agent-selected-before-review": "Agent selective checkpoint requested",
 	"legacy-wip-baseline": "Legacy WIP baseline recorded",
 	unavailable: "Git baseline unavailable",
 };

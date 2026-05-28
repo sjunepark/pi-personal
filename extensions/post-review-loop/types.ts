@@ -24,7 +24,7 @@ export type ControlRequest = {
 
 export type BaselineState = {
 	ref: string;
-	mode: "existing-head" | "created-before-review" | "amended-before-review" | "legacy-wip-baseline" | "unavailable";
+	mode: "existing-head" | "created-before-review" | "amended-before-review" | "agent-selected-before-review" | "legacy-wip-baseline" | "unavailable";
 	createdCommit: boolean;
 	scopedFiles: string[];
 	notes: string;
