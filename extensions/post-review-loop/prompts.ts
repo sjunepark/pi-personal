@@ -257,6 +257,41 @@ function coreRules(state: LoopState): string {
 - End the phase by calling post_review_loop_submit_phase_result. Do not freehand the final report.${firstPhaseOnly}`;
 }
 
+function codeChangeLines(state: LoopState): string {
+	if (!state.codeChanges.length) return "- none";
+	return state.codeChanges.map((item) => `- ${promptLine(item.title)} (${inlineList(item.files, "no files", 8)}): ${promptLine(item.issueAddressed, 260)}`).join("\n");
+}
+
+function finalCommitMessageLines(state: LoopState): string {
+	if (!state.commitMessage?.subject.trim()) return "No commit message was submitted; write a normal project commit message from the actual selected changes.";
+	return [`Suggested subject: ${state.commitMessage.subject.trim()}`, state.commitMessage.body?.trim() ? `Suggested body:\n${state.commitMessage.body.trim()}` : undefined]
+		.filter((item): item is string => Boolean(item))
+		.join("\n");
+}
+
+export function finalCommitPrompt(state: LoopState): string {
+	return `Post-review-loop reached its final gate. Before the final report, create the after-review commit with agent-selected staging.
+
+Scope: ${promptLine(state.scope, 600)}
+Original baseline: ${state.baseline.originalRef ?? state.baseline.ref}
+Reviewed/edited files: ${inlineList([...state.filesChanged, ...state.codeChanges.flatMap((item) => item.files)], "none", 12)}
+
+Loop-applied code changes:
+${codeChangeLines(state)}
+
+Commit message guidance:
+${finalCommitMessageLines(state)}
+
+Task:
+- Inspect git status, staged changes, unstaged changes, and the loop-applied codeChanges above.
+- Stage and commit only the changes that were applied by this review loop. You may use partial hunk staging when a file mixes loop edits with unrelated work.
+- Leave unrelated files or hunks uncommitted; do not discard or rewrite unrelated work.
+- If the relevant loop edits are already committed, do not create a duplicate commit; report the existing HEAD/ref.
+- If no loop-applied edits remain to commit, do not commit.
+- Use a normal project commit message. Do not mention checkpointing, the loop, automation, or internal ids.
+- After the commit decision, call post_review_loop_submit_final_commit_result. Do not call post_review_loop_submit_phase_result again.`;
+}
+
 function schemaReminder(): string {
 	return `Structured result reminder:
 - summary: 1-3 short sentences about the code/behavior reviewed or changed.
@@ -303,7 +338,8 @@ ${schemaReminder()}`;
 }
 
 export function resumePrompt(state: LoopState, options: { currentFingerprint?: WorktreeFingerprint } = {}): string {
-	if (state.phase === "final-report") return "Post-review-loop is ready to render its final report. Call post_review_loop_get_state if needed.";
+	if (state.lifecycle === "finalizing") return finalCommitPrompt(state);
+	if (state.lifecycle === "complete" || state.phase === "final-report") return "Post-review-loop is ready to render its final report. Call post_review_loop_get_state if needed.";
 	return phasePrompt(state, state.phase, options);
 }
 

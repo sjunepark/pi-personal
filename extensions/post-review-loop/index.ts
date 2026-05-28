@@ -5,12 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ReviewLoopCompactor } from "./compact.js";
-import { computeWorktreeFingerprint, createAfterReviewCommit, establishBaseline, failedAfterReviewCommit } from "./git.js";
+import { computeWorktreeFingerprint, createAfterReviewCommit, establishBaseline, failedAfterReviewCommit, needsAgentSelectedAfterReviewCommit } from "./git.js";
 import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
-import { oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
+import { finalCommitPrompt, oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
-import type { BucketIStatus, BucketIIStatus, ControlRequest, LoopState, PhaseResult, ValidationResult, WorktreeFingerprint } from "./types.js";
+import type { AfterReviewCommitState, BucketIStatus, BucketIIStatus, ControlRequest, LoopState, PhaseResult, ValidationResult, WorktreeFingerprint } from "./types.js";
 import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
@@ -115,6 +115,13 @@ const SubmitPhaseResultSchema = Type.Object({
 	commitMessage: Type.Optional(CommitMessageSchema),
 	scopeBlocked: Type.Optional(Type.Boolean()),
 	validationBlocked: Type.Optional(Type.Boolean()),
+});
+
+const FinalCommitResultSchema = Type.Object({
+	committed: Type.Boolean({ description: "True when an after-review commit was created or an existing commit already contains the loop-applied edits." }),
+	ref: Type.Optional(Type.String({ minLength: 1, description: "Commit ref when committed is true, preferably git rev-parse --short HEAD." })),
+	files: Type.Array(Type.String(), { description: "Files included in the selected after-review commit or verified as already committed." }),
+	notes: Type.String({ minLength: 1, description: "What was committed, skipped, or left uncommitted, including any unrelated hunks intentionally left out." }),
 });
 
 const AbortSchema = Type.Object({
@@ -342,7 +349,7 @@ function compactStatusMarkdown(state: LoopState | null, options: { currentFinger
 
 function fullStatusMarkdown(state: LoopState | null): string {
 	if (!state) return "No post-review-loop state.";
-	if (state.lifecycle === "complete" || state.phase === "final-report") return renderFinalReport(state, { full: true });
+	if (state.lifecycle === "complete") return renderFinalReport(state, { full: true });
 	return renderCurrentReport(state, { full: true });
 }
 
@@ -353,6 +360,7 @@ function statusMarkdown(state: LoopState | null, options: { full?: boolean; curr
 function requiredNextAction(state: LoopState): string {
 	const control = controlRequestText(state.controlRequest);
 	if (state.lifecycle === "complete") return "No further post-review-loop action is required. The final report has been rendered or is available from post_review_loop_get_state and /post-review-loop report.";
+	if (state.lifecycle === "finalizing") return "Create or verify the selective after-review commit for loop-applied edits, then call post_review_loop_submit_final_commit_result.";
 	if (state.lifecycle === "checkpointing") return control ? `Stop substantial work and wait for checkpoint evaluation to finish; pending request: ${control}.` : "Stop substantial work and wait for checkpoint evaluation to finish.";
 	if (state.lifecycle === "paused") return "Resume the loop before submitting another phase result.";
 	if (state.phase === "final-report") return "Render or inspect the final report.";
@@ -457,7 +465,7 @@ function parseOneshotArgs(args: string): { scope: string; reviewOnly: boolean } 
 function renderReportOnly(options: { full?: boolean } = {}): string {
 	const state = runtime.state;
 	if (!state) throw new Error("No post-review-loop state.");
-	return state.lifecycle === "complete" || state.phase === "final-report" ? renderFinalReport(state, options) : renderCurrentReport(state, options);
+	return state.lifecycle === "complete" ? renderFinalReport(state, options) : renderCurrentReport(state, options);
 }
 
 function cancelLoop(pi: ExtensionAPI, ctx: ExtensionContext): { hadState: boolean; hadPendingCheckpoint: boolean; abortedAgent: boolean } {
@@ -528,13 +536,15 @@ function registerMarkdownRenderer(pi: ExtensionAPI): void {
 	});
 }
 
-function completeWithReport(pi: ExtensionAPI, ctx: ExtensionContext, event: string): string {
+function completeWithReport(pi: ExtensionAPI, ctx: ExtensionContext, event: string, options: { skipCommit?: boolean } = {}): string {
 	let state = runtime.state;
 	if (!state) throw new Error("No post-review-loop state.");
-	try {
-		runtime.recordAfterReviewCommit(createAfterReviewCommit(ctx.cwd, state));
-	} catch (error) {
-		runtime.recordAfterReviewCommit(failedAfterReviewCommit(ctx.cwd, state, error), error instanceof Error ? error.message : String(error));
+	if (!options.skipCommit) {
+		try {
+			runtime.recordAfterReviewCommit(createAfterReviewCommit(ctx.cwd, state));
+		} catch (error) {
+			runtime.recordAfterReviewCommit(failedAfterReviewCommit(ctx.cwd, state, error), error instanceof Error ? error.message : String(error));
+		}
 	}
 	state = runtime.state;
 	if (!state) throw new Error("No post-review-loop state.");
@@ -542,6 +552,12 @@ function completeWithReport(pi: ExtensionAPI, ctx: ExtensionContext, event: stri
 	runtime.completeWithReport(report);
 	persist(pi, ctx, event);
 	return report;
+}
+
+function startFinalCommitSelection(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	const finalizing = runtime.beginFinalCommitSelection();
+	persist(pi, ctx, "final-commit-selection-requested");
+	pi.sendUserMessage(finalCommitPrompt(finalizing), { deliverAs: "followUp" });
 }
 
 function startLoop(pi: ExtensionAPI, ctx: ExtensionContext, scope: string, options: { limit?: number; reviewOnly: boolean; gitCheckpoint: boolean }): LoopState {
@@ -700,7 +716,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const state = runtime.state;
 			const currentFingerprint = currentFingerprintForState(ctx, state);
-			const returnFinalReport = state?.lifecycle === "complete" || state?.phase === "final-report";
+			const returnFinalReport = state?.lifecycle === "complete";
 			const markdown = statusMarkdown(state, { full: returnFinalReport, currentFingerprint });
 			return textToolResult(markdown, compactToolDetails(state, returnFinalReport ? { currentFingerprint, report: markdown } : { currentFingerprint }));
 		},
@@ -741,6 +757,15 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 				const { state, gate } = runtime.submit(normalized, fingerprint ? { cwd: ctx.cwd, fingerprint } : undefined);
 				persist(pi, ctx, "phase-submitted");
 				if (gate.decision === "stop") {
+					if (needsAgentSelectedAfterReviewCommit(ctx.cwd, state)) {
+						startFinalCommitSelection(pi, ctx);
+						return textToolResult(
+							"Post-review-loop reached its final gate. A selective after-review commit prompt is queued; commit only loop-applied edits, then call post_review_loop_submit_final_commit_result.",
+							compactToolDetails(runtime.state, { gate, finalCommitSelectionPending: true }),
+							false,
+							true,
+						);
+					}
 					const report = completeWithReport(pi, ctx, "final-report-rendered");
 					queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
 					return textToolResult(`Post-review-loop stopped. Final report:\n\n${report}`, compactToolDetails(runtime.state, { gate, report }), false, true);
@@ -769,6 +794,41 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return textToolResult(message, compactToolDetails(runtime.state, { error: message }), true, false);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "post_review_loop_submit_final_commit_result",
+		label: "Submit Post Review Loop Final Commit Result",
+		description: "Submit the result of the selective after-review commit step and render the final report.",
+		promptSnippet: "After the final commit prompt, report whether loop-applied edits were selectively committed or intentionally left uncommitted.",
+		promptGuidelines: [
+			"Use only when post-review-loop asks for the selective after-review commit result.",
+			"Commit only loop-applied edits; use partial hunk staging when unrelated work shares a file.",
+			"Do not create duplicate commits when the loop-applied edits are already committed.",
+		],
+		parameters: FinalCommitResultSchema,
+		executionMode: "sequential",
+		async execute(_toolCallId, params: { committed: boolean; ref?: string; files: string[]; notes: string }, _signal, _onUpdate, ctx) {
+			try {
+				const state = runtime.state;
+				if (!state) throw new Error("No post-review-loop is active.");
+				if (state.lifecycle !== "finalizing") throw new Error(`Loop is ${state.lifecycle}; final commit result is not expected now.`);
+				const afterReviewCommit: AfterReviewCommitState = {
+					ref: params.committed ? (params.ref?.trim() || "unknown") : "None",
+					mode: params.committed ? "agent-selected-after-review" : "left-uncommitted",
+					files: unique(params.files),
+					notes: params.notes.trim(),
+				};
+				runtime.recordAfterReviewCommit(afterReviewCommit);
+				persist(pi, ctx, "final-commit-submitted");
+				const report = completeWithReport(pi, ctx, "final-report-rendered", { skipCommit: true });
+				queueMarkdownMessageAfterAgent("Post-review-loop final report", report);
+				return textToolResult(`Post-review-loop stopped. Final report:\n\n${report}`, compactToolDetails(runtime.state, { report }), false, true);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return textToolResult(message, compactToolDetails(runtime.state, { error: message }), true);
 			}
 		},
 	});

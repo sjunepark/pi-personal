@@ -37,15 +37,6 @@ function safeGitRaw(cwd: string, args: string[]): string | undefined {
 	}
 }
 
-function gitQuiet(cwd: string, args: string[]): boolean {
-	try {
-		execFileSync("git", args, { cwd, encoding: "utf8", stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 function unique(values: string[]): string[] {
 	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
@@ -113,13 +104,11 @@ function finalCommitMessage(state: LoopState): CommitMessage {
 	return ordinaryProjectCommitMessage(fallback) ?? { subject: "feat: update reviewed implementation" };
 }
 
-function commit(cwd: string, message: CommitMessage, options: { amend?: boolean; files?: string[] } = {}): void {
+function commit(cwd: string, message: CommitMessage, options: { amend?: boolean } = {}): void {
 	const args = ["commit"];
 	if (options.amend) args.push("--amend");
 	args.push("-m", message.subject);
 	if (message.body?.trim()) args.push("-m", message.body.trim());
-	const files = options.files?.length ? unique(options.files).map((file) => safeRepoPath(cwd, file)).filter((file): file is string => Boolean(file)) : [];
-	if (files.length) args.push("--", ...files);
 	git(cwd, args);
 }
 
@@ -132,11 +121,6 @@ function stageFiles(cwd: string, files: string[]): void {
 	const cleaned = unique(files).map((file) => safeRepoPath(cwd, file)).filter((file): file is string => Boolean(file));
 	if (!cleaned.length) return;
 	git(cwd, ["add", "--", ...cleaned]);
-}
-
-function hasStagedChanges(cwd: string, files?: string[]): boolean {
-	const cleaned = files?.length ? unique(files).map((file) => safeRepoPath(cwd, file)).filter((file): file is string => Boolean(file)) : [];
-	return !gitQuiet(cwd, ["diff", "--cached", "--quiet", "--", ...cleaned]);
 }
 
 function isCurrentHead(cwd: string, ref: string | undefined): boolean {
@@ -301,7 +285,14 @@ export function defaultAfterReviewCommit(): AfterReviewCommitState {
 }
 
 export function normalizeAfterReviewCommit(state: LoopState): AfterReviewCommitState {
-	if (state.afterReviewCommit.mode === "created-after-review" || state.afterReviewCommit.mode === "amended-after-review" || state.afterReviewCommit.mode === "failed") return state.afterReviewCommit;
+	if (
+		state.afterReviewCommit.mode === "created-after-review" ||
+		state.afterReviewCommit.mode === "amended-after-review" ||
+		state.afterReviewCommit.mode === "agent-selected-after-review" ||
+		state.afterReviewCommit.mode === "failed"
+	) {
+		return state.afterReviewCommit;
+	}
 	const files = loopEditedFiles(state);
 	const skippedFiles = files.length ? files : state.baseline.scopedFiles;
 	const failed = state.validation.some((item) => item.result === "failed");
@@ -322,6 +313,14 @@ export function failedAfterReviewCommit(cwd: string, state: LoopState, error: un
 	};
 }
 
+export function needsAgentSelectedAfterReviewCommit(cwd: string, state: LoopState): boolean {
+	const normalized = normalizeAfterReviewCommit(state);
+	if (normalized.mode !== "left-uncommitted") return false;
+	const inside = safeGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
+	if (inside !== "true") return false;
+	return !(state.baseline.createdCommit && isCurrentHead(cwd, state.baseline.checkpointRef));
+}
+
 export function createAfterReviewCommit(cwd: string, state: LoopState): AfterReviewCommitState {
 	const normalized = normalizeAfterReviewCommit(state);
 	const inside = safeGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
@@ -329,28 +328,18 @@ export function createAfterReviewCommit(cwd: string, state: LoopState): AfterRev
 
 	const canAmendBaseline = state.baseline.createdCommit && isCurrentHead(cwd, state.baseline.checkpointRef);
 	if (normalized.mode !== "left-uncommitted" && !(normalized.mode === "not-needed" && canAmendBaseline)) return normalized;
+	if (!canAmendBaseline) return normalized;
 
 	assertSafeToCreateCheckpoint(cwd);
 	const files = afterReviewFiles(state);
 	const message = finalCommitMessage(state);
-
-	if (canAmendBaseline) {
-		if (normalized.mode === "left-uncommitted") stageFiles(cwd, loopEditedFiles(state));
-		commit(cwd, message, { amend: true });
-		const ref = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
-		return {
-			ref,
-			mode: "amended-after-review",
-			files,
-			notes: `Amended temporary before-review checkpoint ${state.baseline.checkpointRef ?? "unknown"} into a normal project commit.`,
-		};
-	}
-
-	const editedFiles = loopEditedFiles(state);
-	if (!editedFiles.length) return { ref: "None", mode: "not-needed", files: [] };
-	stageFiles(cwd, editedFiles);
-	if (!hasStagedChanges(cwd, editedFiles)) return { ref: "None", mode: "not-needed", files };
-	commit(cwd, message, { files: editedFiles });
+	if (normalized.mode === "left-uncommitted") stageFiles(cwd, loopEditedFiles(state));
+	commit(cwd, message, { amend: true });
 	const ref = safeGit(cwd, ["rev-parse", "--short", "HEAD"]) ?? "unknown";
-	return { ref, mode: "created-after-review", files, notes: "Created a normal project commit for applied review-loop changes." };
+	return {
+		ref,
+		mode: "amended-after-review",
+		files,
+		notes: `Amended temporary before-review checkpoint ${state.baseline.checkpointRef ?? "unknown"} into a normal project commit.`,
+	};
 }

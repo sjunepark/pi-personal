@@ -75,6 +75,8 @@ const FULL_STATE_EVENTS = new Set([
 	"stop-requested",
 	"stopped",
 	"final-report-rendered",
+	"final-commit-selection-requested",
+	"final-commit-submitted",
 	"aborted",
 	"cleared",
 ]);
@@ -366,6 +368,13 @@ export class ReviewLoopRuntime {
 	markCheckpointFailed(error: string): LoopState {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
 		this.#state = { ...this.#state, lifecycle: "paused", lastError: error, updatedAt: now() };
+		return this.state!;
+	}
+
+	beginFinalCommitSelection(): LoopState {
+		if (!this.#state) throw new Error("No post-review-loop is active.");
+		if (this.#state.lifecycle !== "complete" || this.#state.phase !== "final-report") throw new Error(`Loop is ${this.#state.lifecycle} ${this.#state.phase}, not ready for final commit selection.`);
+		this.#state = { ...this.#state, lifecycle: "finalizing", updatedAt: now() };
 		return this.state!;
 	}
 

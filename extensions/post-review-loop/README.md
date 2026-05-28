@@ -19,6 +19,7 @@ Pi extension that owns the post-implementation review loop workflow.
 
 - `post_review_loop_get_state`
 - `post_review_loop_submit_phase_result`
+- `post_review_loop_submit_final_commit_result`
 - `post_review_loop_abort`
 
 The model supplies phase findings, validation, submitted phase-scope files, and code-change facts. The extension persists the ledger, gates phase transitions, owns checkpoint compaction internally, and renders concise default reports; use `--full` for audit detail.
@@ -33,7 +34,7 @@ The model supplies phase findings, validation, submitted phase-scope files, and 
 - The agent writes the selective checkpoint commit message freely as a normal project commit. Unrelated dirty files or hunks should remain uncommitted.
 - If no uncommitted changes clearly belong to the review target, the agent should not commit and should continue reviewing the requested scope; reviews may target prior commits, branches, ranges, or implementation areas.
 - When the default `uncommitted changes` scope gets a selective checkpoint commit, the first pass should treat `ORIGINAL_HEAD..HEAD` as the primary reviewed implementation boundary, plus any explicitly relevant uncommitted leftovers.
-- On final completion, if validation/scope gates are not blocking and the loop itself applied code changes, the extension creates a normal project commit for the files recorded in `codeChanges`. It no longer stages the entire worktree for that final commit. Legacy sessions that already have a temporary before-review checkpoint can still be amended into a normal project commit.
+- On final completion, if validation/scope gates are not blocking and the loop itself applied code changes, the extension queues a final commit prompt instead of staging files itself. The agent must commit only loop-applied edits, using partial hunks when needed, then call `post_review_loop_submit_final_commit_result` so the extension can render the final report. Legacy sessions that already have a temporary before-review checkpoint can still be amended into a normal project commit.
 - The extension does not push commits. It refuses automatic commits during active merge/rebase states and skips final commit/amend work when validation failed or scope/context blocked safe completion.
 - Bucket I history is append-only. Active/current views coalesce findings by normalized title because v1 has no stable finding id; treat that as a display approximation, not a durable identity model.
 - Human reports are concise by default: summary, reviewed target, applied fixes, remaining decisions, validation outcome, and changed-file summary. `report --full` expands phase logs, complete validation rows, rejected/kept-as-is rationale, and full Bucket I/Bucket II detail. Final report tool results include the markdown directly, and rendered markdown messages store the markdown in normal message content as well as renderer details so API clients can retrieve it without a TUI-only custom render path.

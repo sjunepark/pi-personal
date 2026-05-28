@@ -14,6 +14,7 @@ const AFTER_REVIEW_MODE_LABELS: Record<string, string> = {
 	"not-needed": "No after-review commit needed",
 	"created-after-review": "After-review commit created",
 	"amended-after-review": "Before-review checkpoint amended into final project commit",
+	"agent-selected-after-review": "After-review commit selected by agent",
 	"skipped-validation-failed": "Skipped because validation failed",
 	"skipped-scope-blocked": "Skipped because scope or context blocked",
 	"left-uncommitted": "Loop changes left uncommitted",

@@ -1,5 +1,5 @@
 export type Phase = "post-review" | "impl-review" | "impl";
-export type Lifecycle = "active" | "paused" | "checkpointing" | "complete" | "failed";
+export type Lifecycle = "active" | "paused" | "checkpointing" | "finalizing" | "complete" | "failed";
 export type ValidationStatus = "passed" | "failed" | "skipped";
 export type ValidationSource = "fresh" | "reused";
 export type BucketIStatus = "candidate" | "accepted" | "applied" | "rejected" | "remaining" | "downgraded";
@@ -35,7 +35,15 @@ export type BaselineState = {
 
 export type AfterReviewCommitState = {
 	ref: string;
-	mode: "not-needed" | "created-after-review" | "amended-after-review" | "skipped-validation-failed" | "skipped-scope-blocked" | "left-uncommitted" | "failed";
+	mode:
+		| "not-needed"
+		| "created-after-review"
+		| "amended-after-review"
+		| "agent-selected-after-review"
+		| "skipped-validation-failed"
+		| "skipped-scope-blocked"
+		| "left-uncommitted"
+		| "failed";
 	files: string[];
 	notes?: string;
 };
@@ -84,7 +92,7 @@ export type RejectedItem = {
 };
 
 export type CommitMessage = {
-	/** Ordinary commit subject to use when finalizing or amending the loop's git checkpoint. */
+	/** Ordinary commit subject to use for selected start/final project commits. */
 	subject: string;
 	/** Optional body paragraphs or bullets. Must describe the change, not post-review-loop metadata. */
 	body?: string;
@@ -235,4 +243,4 @@ export const ENTRY_TYPE = "post-review-loop-state";
 export const STATUS_KEY = "post-review-loop";
 export const DEFAULT_LIMIT = 5;
 export const MAX_SCOPE_CHARS = 16_000;
-export const TOOL_NAMES = ["post_review_loop_get_state", "post_review_loop_submit_phase_result", "post_review_loop_abort"] as const;
+export const TOOL_NAMES = ["post_review_loop_get_state", "post_review_loop_submit_phase_result", "post_review_loop_submit_final_commit_result", "post_review_loop_abort"] as const;
