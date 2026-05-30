@@ -10,8 +10,8 @@ import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import { finalCommitPrompt, oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
-import type { AfterReviewCommitState, BucketIStatus, BucketIIStatus, ControlRequest, LoopState, PhaseResult, ValidationResult, WorktreeFingerprint } from "./types.js";
-import { ENTRY_TYPE, STATUS_KEY } from "./types.js";
+import type { AfterReviewCommitState, BucketIStatus, BucketIIStatus, ControlRequest, DesignSignal, LoopState, PhaseResult, ValidationResult, WorktreeFingerprint } from "./types.js";
+import { DESIGN_SIGNALS, ENTRY_TYPE, STATUS_KEY } from "./types.js";
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
 type MarkdownConstructor = new (text: string, paddingX: number, paddingY: number, theme: unknown) => unknown;
@@ -36,6 +36,8 @@ const BucketIStatusSchema = Type.String({
 const BucketIIStatusSchema = Type.String({
 	description: 'Allowed: "left for user decision", "deferred", "kept as-is for now", "implemented after explicit approval". Common aliases like "open" are normalized.',
 });
+const DESIGN_SIGNAL_DESCRIPTION = `Root-cause/design-smell class. Allowed: ${DESIGN_SIGNALS.map((signal) => `"${signal}"`).join(", ")}.`;
+const DesignSignalSchema = Type.String({ description: DESIGN_SIGNAL_DESCRIPTION });
 
 const ValidationSchema = Type.Object({
 	command: Type.String({ minLength: 1 }),
@@ -48,6 +50,7 @@ const ValidationSchema = Type.Object({
 const BucketISchema = Type.Object({
 	title: Type.String({ minLength: 1 }),
 	revealed: Type.String({ minLength: 1 }),
+	designSignal: DesignSignalSchema,
 	status: BucketIStatusSchema,
 	fix: Type.String({ minLength: 1 }),
 	files: Type.Array(Type.String()),
@@ -58,6 +61,7 @@ const BucketISchema = Type.Object({
 const BucketIISchema = Type.Object({
 	title: Type.String({ minLength: 1 }),
 	revealed: Type.String({ minLength: 1 }),
+	designSignal: DesignSignalSchema,
 	weakness: Type.String({ minLength: 1 }),
 	options: Type.Array(Type.String()),
 	recommendedAction: Type.String({ minLength: 1 }),
@@ -484,6 +488,7 @@ const BUCKET_I_STATUSES: BucketIStatus[] = ["candidate", "accepted", "applied", 
 const BUCKET_II_STATUSES: BucketIIStatus[] = ["left for user decision", "deferred", "kept as-is for now", "implemented after explicit approval"];
 const BUCKET_I_STATUS_BY_KEY = new Map<string, BucketIStatus>(BUCKET_I_STATUSES.map((status): [string, BucketIStatus] => [status, status]));
 const BUCKET_II_STATUS_BY_KEY = new Map<string, BucketIIStatus>(BUCKET_II_STATUSES.map((status): [string, BucketIIStatus] => [status, status]));
+const DESIGN_SIGNAL_BY_KEY = new Map<string, DesignSignal>(DESIGN_SIGNALS.map((signal): [string, DesignSignal] => [signal, signal]));
 const BUCKET_II_STATUS_ALIASES: Record<string, BucketIIStatus> = {
 	open: "left for user decision",
 	unresolved: "left for user decision",
@@ -519,12 +524,18 @@ function normalizeValidationSource(value: unknown): "fresh" | "reused" | undefin
 	throw new Error(`Invalid validation source "${String(value)}". Allowed: "fresh", "reused".`);
 }
 
+function normalizeDesignSignal(value: string): DesignSignal {
+	const canonical = DESIGN_SIGNAL_BY_KEY.get(compactText(value).toLowerCase());
+	if (canonical) return canonical;
+	throw new Error(`Invalid designSignal "${value}". Allowed: ${DESIGN_SIGNALS.map((signal) => `"${signal}"`).join(", ")}.`);
+}
+
 function normalizePhaseResult(params: PhaseResult): PhaseResult {
 	return {
 		...params,
 		validation: params.validation.map((item) => ({ ...item, source: normalizeValidationSource(item.source) })),
-		bucketI: params.bucketI.map((item) => ({ ...item, status: normalizeBucketIStatus(String(item.status)) })),
-		bucketII: params.bucketII.map((item) => ({ ...item, status: normalizeBucketIIStatus(String(item.status)) })),
+		bucketI: params.bucketI.map((item) => ({ ...item, designSignal: normalizeDesignSignal(String(item.designSignal)), status: normalizeBucketIStatus(String(item.status)) })),
+		bucketII: params.bucketII.map((item) => ({ ...item, designSignal: normalizeDesignSignal(String(item.designSignal)), status: normalizeBucketIIStatus(String(item.status)) })),
 	};
 }
 
@@ -734,6 +745,7 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Call only at the end of the active post-review-loop phase.",
 			"The extension, not the model, decides whether to continue or stop.",
+			"Classify each Bucket I and Bucket II item with designSignal so reports explain the root-cause/design-smell category, not just the fix.",
 			"Treat accepted Bucket I as auto-fix-track work: impl phases should apply it unless a concrete blocker exists; candidates are not fixed during review-only phases.",
 			"Only submit new or materially changed Bucket II items; reuse the existing title verbatim for updates and omit unchanged existing Bucket II items.",
 			"Include commitMessage when the reviewed work is clear; write a normal project commit message, not checkpoint or post-review-loop metadata.",

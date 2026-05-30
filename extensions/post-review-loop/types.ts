@@ -4,6 +4,16 @@ export type ValidationStatus = "passed" | "failed" | "skipped";
 export type ValidationSource = "fresh" | "reused";
 export type BucketIStatus = "candidate" | "accepted" | "applied" | "rejected" | "remaining" | "downgraded";
 export type BucketIIStatus = "left for user decision" | "deferred" | "kept as-is for now" | "implemented after explicit approval";
+export const DESIGN_SIGNALS = [
+	"simple local mistake",
+	"weak validation or invariant gap",
+	"unclear ownership / boundary problem",
+	"weak type or schema model",
+	"state, lifecycle, concurrency, or ordering hazard",
+	"over-abstraction, under-abstraction, or duplicated logic",
+	"brittle integration or contract mismatch",
+] as const;
+export type DesignSignal = (typeof DESIGN_SIGNALS)[number];
 
 export type Verdict =
 	| "Loop clean: no accepted/actionable Bucket I findings remain"
@@ -60,6 +70,8 @@ export type ValidationResult = {
 export type BucketIItem = {
 	title: string;
 	revealed: string;
+	/** Root-cause/design-smell class that explains why the finding matters. */
+	designSignal: DesignSignal;
 	status: BucketIStatus;
 	fix: string;
 	files: string[];
@@ -70,6 +82,8 @@ export type BucketIItem = {
 export type BucketIIItem = {
 	title: string;
 	revealed: string;
+	/** Root-cause/design-smell class that explains why the finding needs a decision. */
+	designSignal: DesignSignal;
 	weakness: string;
 	options: string[];
 	recommendedAction: string;

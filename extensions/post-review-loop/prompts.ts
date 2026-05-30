@@ -1,4 +1,5 @@
 import { countCurrentUnresolvedBucketII, currentBucketIItems, currentBucketIIItems, isActionableBucketI, isUnresolvedBucketII } from "./ledger.js";
+import { DESIGN_SIGNALS } from "./types.js";
 import type { BucketIItem, BucketIIItem, LoopState, Phase, RejectedItem, ValidationCacheEntry, ValidationResult, WorktreeFingerprint } from "./types.js";
 
 function line(value: string): string {
@@ -19,10 +20,18 @@ function inlineList(values: string[], empty = "none", limit = 5): string {
 	return remaining > 0 ? `${shown}, +${remaining} more` : shown;
 }
 
+function designSignalLine(item: { designSignal?: string }): string {
+	return item.designSignal ? `; signal: ${promptLine(item.designSignal, 120)}` : "";
+}
+
+function designSignalOptions(separator: string): string {
+	return DESIGN_SIGNALS.map((signal) => `"${signal}"`).join(separator);
+}
+
 function bucketILines(items: BucketIItem[]): string {
 	if (!items.length) return "- none";
 	return items
-		.map((item) => `- [${item.status}] ${promptLine(item.title)} — ${promptLine(item.fix, 260)} (${inlineList(item.files)})`)
+		.map((item) => `- [${item.status}] ${promptLine(item.title)} — ${promptLine(item.fix, 260)}${designSignalLine(item)} (${inlineList(item.files)})`)
 		.join("\n");
 }
 
@@ -37,7 +46,7 @@ function bucketIILines(items: BucketIIItem[]): string {
 	return items
 		.map((item) => {
 			const suffix = isUnresolvedBucketII(item) ? ` — recommended: ${promptLine(item.recommendedAction, 260)}` : "";
-			return `- [${item.status}] ${promptLine(item.title)}${suffix}`;
+			return `- [${item.status}] ${promptLine(item.title)}${designSignalLine(item)}${suffix}`;
 		})
 		.join("\n");
 }
@@ -249,6 +258,9 @@ function coreRules(state: LoopState): string {
 - For default uncommitted-change scope, inspect staged changes, unstaged changes, and untracked files unless a narrower target or unchanged current fingerprint narrows the repeat check. If you created a selective first-pass checkpoint commit, review the original HEAD..current HEAD commit range as the primary target and inspect remaining dirty work only for relevance.
 - Bucket I = concrete, safe, in-scope, root-cause fixable now, and auto-fix-track.
 - Bucket II = real decisions needing user/product/architecture judgment; do not implement without explicit approval.
+- For every Bucket I/Bucket II item, name the visible symptom, expected behavior, and root cause briefly in the finding fields, then classify designSignal as the best fit from the schema.
+- Treat designSignal as an evidence filter: prefer findings that expose ownership, invariant, type/schema, lifecycle, abstraction, or integration weakness over isolated polish.
+- Prefer the strongest practical findings over exhaustive lists; if several related findings share the same root cause, batch them instead of submitting duplicates.
 - Reject speculative polish, preferences, broad rewrites, and future-proofing.
 - Prefer integrated fixes over wrappers, compatibility layers, or bandages.
 - Batch closely related Bucket I work that shares files, modules, or state domains; do not checkpoint after only the first related item when the rest can be safely verified or fixed together.
@@ -300,6 +312,7 @@ function schemaReminder(): string {
 - codeChanges: loop edits only; keep empty in review-only phases.
 - Bucket I statuses: "candidate", "accepted", "applied", "rejected", "remaining", "downgraded".
 - Bucket II statuses: "left for user decision", "deferred", "kept as-is for now", "implemented after explicit approval".
+- designSignal: use exactly one of ${designSignalOptions(", ")}.
 - commitMessage: optional ordinary project commit message; never mention the loop, checkpointing, automation, or ids.`;
 }
 
@@ -367,7 +380,10 @@ Default anchoring:
 
 Review lens:
 - Treat findings as evidence about ownership, boundaries, data shape, control flow, module layout, abstraction fit, or future change cost.
+- For each meaningful finding, state the visible symptom, expected behavior, broad root cause, and whether it is a simple local mistake or a deeper design signal.
+- Classify the design signal as one of: ${designSignalOptions("; ")}.
 - Prefer the smallest root-cause refactor that actually improves the codebase's shape, not the smallest tactical patch.
+- Prefer the strongest practical improvements over exhaustive lists; usually recommend at most three unless the scope has genuinely independent high-value issues.
 - Reject weak, speculative, unrealistic, noisy, overbroad, or overcomplicated recommendations.
 - Do not invent a flaw just to produce feedback; a clean review is valid.
 - Avoid tiny helper extractions, naming polish, isolated dedupe, or logging niceties unless they reveal a broader boundary or ownership issue.
@@ -409,10 +425,10 @@ Output exactly these sections:
 Give 1-3 short sentences explaining the reviewed code, behavior, or flow in human terms. If useful, add one concise line distinguishing files reviewed from files edited.
 
 ### Applied / Resolved
-Number each item. Include what the implementation revealed, the design/quality weakness, the root-cause fix/refactor applied, why a smaller patch would have been a bandage when relevant, and validation evidence. If empty, say: No automatic changes were applied.
+Number each item. Start with \`[applied]\`. Include what the implementation revealed, designSignal classification, the design/quality weakness, the root-cause fix/refactor applied, why a smaller patch would have been a bandage when relevant, and validation evidence. If empty, say: No automatic changes were applied.
 
 ### Needs Decision / Bucket II
-Number each remaining decision item. Include what was revealed, the design weakness, main options, Recommended action, tradeoffs/risks/uncertainty, and why permission is needed before changing. If empty, say: No unresolved Bucket II decisions remain.
+Number each remaining decision item. Start with \`[recommended now]\`, \`[deferred]\`, or \`[discussion only]\`. Include what was revealed, designSignal classification, the design weakness, main options, Recommended action, tradeoffs/risks/uncertainty, and why permission is needed before changing. If empty, say: No unresolved Bucket II decisions remain.
 
 ### Keep As-Is
 Call out meaningful findings rejected after verification and why no change is recommended. Omit tiny non-findings.

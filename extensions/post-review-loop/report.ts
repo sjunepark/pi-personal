@@ -79,6 +79,10 @@ function escapeTable(value: string): string {
 	return line(value).replace(/\|/g, "\\|");
 }
 
+function designSignalText(item: { designSignal?: string }): string {
+	return item.designSignal ? line(item.designSignal) : "not recorded";
+}
+
 function validationKey(record: ValidationResult): string {
 	return record.command;
 }
@@ -133,6 +137,7 @@ function renderBucketI(records: BucketIItem[], empty = "No Bucket I findings wer
 		.map(
 			(item, index) => `${index + 1}. ${line(item.title)}
    - Revealed: ${line(item.revealed)}
+   - Design signal: ${designSignalText(item)}
    - Status: ${item.status}
    - Root-cause fix/refactor: ${line(item.fix)}
    - Files changed: ${list(item.files)}
@@ -144,7 +149,7 @@ function renderBucketI(records: BucketIItem[], empty = "No Bucket I findings wer
 
 function renderBucketICompact(records: BucketIItem[], empty = "No Bucket I findings were found."): string {
 	if (!records.length) return empty;
-	return records.map((item) => `- [${item.status}] ${line(item.title)} (${list(item.files, "no files", 5)})`).join("\n");
+	return records.map((item) => `- [${item.status}] ${line(item.title)} — ${designSignalText(item)} (${list(item.files, "no files", 5)})`).join("\n");
 }
 
 function bucketIOutcomeGroups(records: BucketIItem[]): { applied: BucketIItem[]; actionable: BucketIItem[]; closedWithoutFix: BucketIItem[] } {
@@ -211,6 +216,7 @@ function renderBucketII(records: BucketIIItem[]): string {
 		.map(
 			(item, index) => `${index + 1}. ${line(item.title)}
    - Revealed: ${line(item.revealed)}
+   - Design signal: ${designSignalText(item)}
    - Design or quality weakness: ${line(item.weakness)}
    - Options / decision points: ${list(item.options)}
    - Recommended action: ${line(item.recommendedAction)}
@@ -225,7 +231,7 @@ function renderBucketIICompact(records: BucketIIItem[]): string {
 	return records
 		.map((item) => {
 			const recommendation = isUnresolvedBucketII(item) ? ` — ${line(item.recommendedAction)}` : "";
-			return `- [${item.status}] ${line(item.title)}${recommendation}`;
+			return `- [${item.status}] ${line(item.title)} — ${designSignalText(item)}${recommendation}`;
 		})
 		.join("\n");
 }
