@@ -224,8 +224,25 @@ function appendToolArgs(args: string[], mode: ToolMode): void {
 		args.push("--no-tools");
 		return;
 	}
-	const tools = mode === "write" ? ["read", "grep", "find", "ls", "bash", "edit", "write"] : ["read", "grep", "find", "ls", "bash"];
+	const tools = mode === "write" ? ["read", "grep", "find", "ls", "bash", "edit", "write"] : ["read", "grep", "find", "ls"];
 	args.push("--tools", tools.join(","));
+}
+
+function createPendingResult(index: number, config: ReturnType<typeof mergeConfig>): SubagentResult {
+	return {
+		index,
+		task: config.task,
+		exitCode: -1,
+		messages: [],
+		stderr: "",
+		usage: emptyUsage(),
+		model: config.model,
+		thinking: config.thinking,
+		context: config.context,
+		tools: config.tools,
+		cwd: config.cwd,
+		durationMs: 0,
+	};
 }
 
 function mergeConfig(
@@ -469,18 +486,25 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					isError: true,
 				};
 			}
+			if (tasks.some((task) => task.task.trim().length === 0)) {
+				return {
+					content: [{ type: "text", text: "Invalid subagent call: every parallel task must include non-empty work." }],
+					details: makeDetails("parallel", []),
+					isError: true,
+				};
+			}
 
-			const partials: SubagentResult[] = [];
+			const configs = tasks.map((task) => mergeConfig(defaults, task));
+			const partials: SubagentResult[] = configs.map((config, index) => createPendingResult(index, config));
 			const emitProgress = () => {
 				const done = partials.filter((item) => item.exitCode !== -1).length;
 				onUpdate?.({
 					content: [{ type: "text", text: `Subagents: ${done}/${tasks.length} done` }],
-					details: makeDetails("parallel", [...partials]),
+					details: makeDetails("parallel", partials.map((item) => ({ ...item }))),
 				});
 			};
 
-			const results = await mapWithConcurrency(tasks, params.concurrency ?? DEFAULT_CONCURRENCY, async (task, index) => {
-				const config = mergeConfig(defaults, task);
+			const results = await mapWithConcurrency(configs, params.concurrency ?? DEFAULT_CONCURRENCY, async (config, index) => {
 				const result = await runSubagent(ctx, index, config, signal, (partial) => {
 					partials[index] = partial;
 					emitProgress();
