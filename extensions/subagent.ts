@@ -13,6 +13,8 @@ const CONTEXT_MODES = ["fresh", "fork"] as const;
 const MAX_PARALLEL_TASKS = 8;
 const DEFAULT_CONCURRENCY = 4;
 const MAX_MODEL_VISIBLE_OUTPUT_BYTES = 50 * 1024;
+const SIMPLE_EXTRACTION_MODEL = "openai-codex/gpt-5.4-mini";
+const MODEL_SELECTION_GUIDANCE = `Subagent model selection. Defaults to the parent session's current model. Use provider/model syntax, e.g. ${SIMPLE_EXTRACTION_MODEL}. Prefer ${SIMPLE_EXTRACTION_MODEL} for simple information extraction, file inventories, exact lookups, and mechanical summarization that do not need judgement; inherit the parent or choose a stronger model for coding, design review, debugging, ambiguity, synthesis, or decisions with risk.`;
 
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 type ToolMode = (typeof TOOL_MODES)[number];
@@ -74,7 +76,7 @@ const SubagentTaskSchema = Type.Object({
 	thinking: Type.Optional(Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)), {
 		description: "Reasoning budget for this child. Defaults to the parent session's current thinking level.",
 	})),
-	model: Type.Optional(Type.String({ description: "Model override. Defaults to the parent session's current model." })),
+	model: Type.Optional(Type.String({ description: MODEL_SELECTION_GUIDANCE })),
 	context: Type.Optional(Type.Union(CONTEXT_MODES.map((mode) => Type.Literal(mode)), {
 		description: "fresh starts from only the supplied task/context. fork branches the current session history.",
 	})),
@@ -94,7 +96,7 @@ const SubagentParams = Type.Object({
 	thinking: Type.Optional(Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)), {
 		description: "Default thinking level for child task(s). Defaults to the parent session's current thinking level.",
 	})),
-	model: Type.Optional(Type.String({ description: "Default model for child task(s). Defaults to the parent session's current model." })),
+	model: Type.Optional(Type.String({ description: `Default model for child task(s). ${MODEL_SELECTION_GUIDANCE}` })),
 	context: Type.Optional(Type.Union(CONTEXT_MODES.map((mode) => Type.Literal(mode)), {
 		description: "Default context mode. fresh is the default and keeps the child context clean.",
 	})),
@@ -438,6 +440,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use subagent when a clean child context would help, or when independent read-only work can run in parallel.",
 			"For subagent, prefer context=fresh and the lowest thinking level that can handle the work; use tools=write only for explicitly delegated edits.",
+			`For subagent tasks that are simple information extraction, file inventories, exact lookups, or mechanical summarization without judgement, prefer model=${SIMPLE_EXTRACTION_MODEL} with minimal/low thinking instead of inheriting an expensive parent model.`,
+			"For subagent, inherit the parent model or choose a stronger child model for coding, design review, debugging, ambiguous research, synthesis, or decisions with risk.",
 		],
 		parameters: SubagentParams,
 
