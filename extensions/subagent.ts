@@ -149,8 +149,16 @@ function getFinalOutput(messages: Message[]): string {
 	return "";
 }
 
+type SubagentStatus = "running" | "succeeded" | "failed";
+
+function subagentStatus(result: SubagentResult): SubagentStatus {
+	if (result.exitCode === -1) return "running";
+	if (result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted") return "failed";
+	return "succeeded";
+}
+
 function isFailed(result: SubagentResult): boolean {
-	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+	return subagentStatus(result) === "failed";
 }
 
 function resultOutput(result: SubagentResult): string {
@@ -560,7 +568,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				return new Text(content?.type === "text" ? content.text : "(no output)", 0, 0);
 			}
 			const lines = details.results.map((item) => {
-				const mark = isFailed(item) ? theme.fg("error", "✗") : item.exitCode === -1 ? theme.fg("warning", "…") : theme.fg("success", "✓");
+				const status = subagentStatus(item);
+				const mark = status === "running" ? theme.fg("warning", "…") : status === "failed" ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const usage = formatUsage(item.usage);
 				const meta = [`thinking ${item.thinking}`, item.model, usage].filter(Boolean).join(" · ");
 				return `${mark} subagent ${item.index + 1}${meta ? theme.fg("dim", ` · ${meta}`) : ""}`;
