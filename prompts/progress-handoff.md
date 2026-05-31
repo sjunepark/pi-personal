@@ -1,12 +1,15 @@
 ---
 description: Create a root PLAN-*.md implementation handoff from the current discussion
+argument-hint: "[handoff focus or instructions]"
 ---
 
 Create an implementation handoff document from the current discussion.
 
+Additional user instruction or context passed with this command: `$ARGUMENTS`
+
 This prompt is for ending a long discussion and preparing a fresh implementation session. Do not implement code, stage files, commit, or push.
 
-Use the current conversation as the primary source of truth. Inspect the repository only as needed to make paths, commands, and constraints concrete.
+Use the current conversation as the primary source of truth. If additional command text is present above, treat it as the user's latest explicit instruction for the handoff. If it is empty, proceed from the current conversation alone. Inspect the repository only as needed to make paths, commands, and constraints concrete.
 
 1. Infer the target root-level plan file name.
    - Choose a short, specific topic slug from the task or feature discussed.
