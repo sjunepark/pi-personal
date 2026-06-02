@@ -263,6 +263,8 @@ function coreRules(state: LoopState): string {
 - Prefer the strongest practical findings over exhaustive lists; if several related findings share the same root cause, batch them instead of submitting duplicates.
 - Reject speculative polish, preferences, broad rewrites, and future-proofing.
 - Prefer integrated fixes over wrappers, compatibility layers, or bandages.
+- When a Bucket I fix suggests a plausible broader refactor/redesign would better address the underlying shape, still apply the safe Bucket I fix when appropriate, but also submit a Bucket II item explaining the broader option, tradeoffs, and why it needs explicit approval before implementation.
+- Do not invent refactor alternatives for every fix. Record the broader-refactor Bucket II only when actual inspected code shows meaningful ownership, boundary, abstraction, lifecycle, schema/type, or integration implications beyond the safe fix.
 - Batch closely related Bucket I work that shares files, modules, or state domains; do not checkpoint after only the first related item when the rest can be safely verified or fixed together.
 - If the compact ledger says active items are queued outside this prompt batch, work only on the shown relevant batch unless you explicitly inspect full status/report; hidden items remain active in the persisted ledger and must not be marked resolved by omission.
 - Submit only new/materially changed Bucket II items; reuse an existing title verbatim to update it.
@@ -385,6 +387,7 @@ Review lens:
 - Prefer the smallest root-cause refactor that actually improves the codebase's shape, not the smallest tactical patch.
 - Prefer the strongest practical improvements over exhaustive lists; usually recommend at most three unless the scope has genuinely independent high-value issues.
 - Reject weak, speculative, unrealistic, noisy, overbroad, or overcomplicated recommendations.
+- When applying or recommending a straightforward fix, check whether the inspected code makes a broader refactor/redesign plausibly better for the long-term shape. If so, apply the safe fix when allowed, and report the broader option as Bucket II with options, tradeoffs, and why approval is needed. Do not manufacture a refactor comparison when the focused fix is clearly sufficient.
 - Do not invent a flaw just to produce feedback; a clean review is valid.
 - Avoid tiny helper extractions, naming polish, isolated dedupe, or logging niceties unless they reveal a broader boundary or ownership issue.
 - Consider both over-structure and under-structure: unnecessary fields/options/wrappers/strategy points, and flat or mixed modules that make one concern hard to follow.
