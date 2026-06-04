@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@mariozechner/pi-coding-agent";
 
 const PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json";
 const DEFAULT_TITLE = "Pi finished";
@@ -26,6 +26,19 @@ type PushoverConfig = {
 type AssistantLike = {
 	role?: string;
 	stopReason?: string;
+};
+
+type ToolResultLike = {
+	role?: string;
+	toolCallId?: string;
+	toolName?: string;
+	details?: unknown;
+};
+
+type NotifyControlDetails = {
+	notify?: {
+		suppressCompletion?: boolean;
+	};
 };
 
 type CompletionNotification = {
@@ -190,6 +203,44 @@ function trimSummary(text: string, maxLength = 160): string {
 	return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 3)}...` : collapsed;
 }
 
+function getNotifyControl(details: unknown): NotifyControlDetails["notify"] | undefined {
+	if (!isRecord(details)) return undefined;
+	const notify = details.notify;
+	return isRecord(notify) ? (notify as NotifyControlDetails["notify"]) : undefined;
+}
+
+function toolResultSuppressesCompletion(toolName: string | undefined, details: unknown): boolean {
+	if (toolName === "compact_conversation") return true;
+	return getNotifyControl(details)?.suppressCompletion === true;
+}
+
+function toolResultIds(messages: readonly unknown[]): Set<string> {
+	const ids = new Set<string>();
+	for (const message of messages) {
+		const candidate = message as ToolResultLike;
+		if (candidate?.role === "toolResult" && typeof candidate.toolCallId === "string") ids.add(candidate.toolCallId);
+	}
+	return ids;
+}
+
+function sessionMessages(ctx: ExtensionContext): unknown[] {
+	const manager = ctx.sessionManager as { getBranch?: () => unknown[]; getEntries?: () => unknown[] };
+	const entries = manager.getBranch?.() ?? manager.getEntries?.() ?? [];
+	return entries.flatMap((entry) => {
+		const message = (entry as { message?: unknown }).message;
+		return message ? [message] : [];
+	});
+}
+
+function messagesSuppressCompletion(messages: readonly unknown[], existingToolResultIds: ReadonlySet<string>): boolean {
+	return messages.some((message) => {
+		const candidate = message as ToolResultLike;
+		if (candidate?.role !== "toolResult") return false;
+		if (typeof candidate.toolCallId === "string" && existingToolResultIds.has(candidate.toolCallId)) return false;
+		return toolResultSuppressesCompletion(candidate.toolName, candidate.details);
+	});
+}
+
 function completionMessage(messages: readonly unknown[], durationMs: number): CompletionNotification | undefined {
 	const assistant = getLastAssistantMessage(messages);
 	if (assistant?.stopReason === "error" || assistant?.stopReason === "aborted") {
@@ -279,6 +330,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 	let warnedMissingConfig = false;
 	let lastNotificationKey = "";
 	let lastNotificationAt = 0;
+	let suppressCompletionNotification = false;
+	let toolResultIdsAtAgentStart = new Set<string>();
 	let currentPostReviewLoopId: string | undefined;
 	const observedActivePostReviewLoopIds = new Set<string>();
 	const notifiedPostReviewLoopIds = new Set<string>();
@@ -318,10 +371,18 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		startedAt = Date.now();
+		suppressCompletionNotification = false;
+		toolResultIdsAtAgentStart = toolResultIds(sessionMessages(ctx));
 		const state = latestPostReviewLoopState(ctx);
 		const id = postReviewLoopId(state);
 		currentPostReviewLoopId = state && id && !isPostReviewLoopTerminal(state) ? id : undefined;
 		if (currentPostReviewLoopId) observedActivePostReviewLoopIds.add(currentPostReviewLoopId);
+	});
+
+	pi.on("tool_result", async (event: ToolResultEvent) => {
+		if (toolResultSuppressesCompletion(event.toolName, event.details)) {
+			suppressCompletionNotification = true;
+		}
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
@@ -334,6 +395,8 @@ export default function pushoverNotify(pi: ExtensionAPI): void {
 			observedActivePostReviewLoopIds.add(loopId);
 			return;
 		}
+
+		if (suppressCompletionNotification || messagesSuppressCompletion(event.messages, toolResultIdsAtAgentStart)) return;
 
 		if (!notificationsEnabled()) return;
 
