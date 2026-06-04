@@ -380,14 +380,16 @@ export class AgentCompactionController {
 	}
 }
 
-// Pi can load package extension entrypoints through isolated module loaders, so share the
-// controller through globalThis to keep compact_conversation registered exactly once.
-const AGENT_COMPACTION_GLOBAL_KEY = "__sjuneparkPiPersonalAgentCompaction" as const;
-const globalAgentCompaction = globalThis as typeof globalThis & {
-	[AGENT_COMPACTION_GLOBAL_KEY]?: AgentCompactionController;
+// Pi can load package extension entrypoints through isolated module contexts, so share the
+// controller through process rather than context-local globalThis. This keeps the
+// compact_conversation tool registered exactly once while letting sibling extensions call
+// the same controller instance.
+const AGENT_COMPACTION_PROCESS_KEY = "__sjuneparkPiPersonalAgentCompaction" as const;
+const agentCompactionProcess = process as typeof process & {
+	[AGENT_COMPACTION_PROCESS_KEY]?: AgentCompactionController;
 };
 
-export const agentCompaction = (globalAgentCompaction[AGENT_COMPACTION_GLOBAL_KEY] ??= new AgentCompactionController());
+export const agentCompaction = (agentCompactionProcess[AGENT_COMPACTION_PROCESS_KEY] ??= new AgentCompactionController());
 
 export default function agentCompactionExtension(pi: ExtensionAPI): void {
 	agentCompaction.register(pi);
