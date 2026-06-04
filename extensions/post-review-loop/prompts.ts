@@ -35,9 +35,9 @@ function bucketILines(items: BucketIItem[]): string {
 		.join("\n");
 }
 
-function appliedBucketILines(items: BucketIItem[]): string {
+function appliedBucketILines(items: BucketIItem[]): string | undefined {
 	const applied = items.filter((item) => item.status === "applied");
-	if (!applied.length) return "Applied Bucket I: none";
+	if (!applied.length) return undefined;
 	return `Applied Bucket I (${applied.length}): ${inlineList(applied.map((item) => item.title), "none", 8)}`;
 }
 
@@ -131,20 +131,19 @@ function renderReusableValidation(state: LoopState, current?: WorktreeFingerprin
 
 function renderStillCurrentEvidence(state: LoopState, current?: WorktreeFingerprint): string {
 	const latest = (state.phaseCaches ?? []).at(-1);
-	if (!latest || !current) return "- none";
+	if (!latest || !current) return "";
 	const wholeWorktreeUnchanged = latest.fingerprint.overallHash === current.overallHash;
 	const unchangedFiles = latest.changedFiles.filter((file) => latest.fingerprint.fileHashes[file] === current.fileHashes[file]);
 	if (wholeWorktreeUnchanged) {
 		return [
-			`- Worktree fingerprint unchanged since iteration ${latest.iteration} ${latest.phase}: ${shortHash(current.overallHash)}.`,
-			`- Prior inspection is still current for: ${inlineList(latest.changedFiles, "no recorded files", 8)}.`,
+			`- Inspection still current for iteration ${latest.iteration} ${latest.phase}: ${inlineList(latest.changedFiles, "no recorded files", 8)} (${shortHash(current.overallHash)}).`,
 			latest.activeBucketI.length ? `- Active finding context: ${inlineList(latest.activeBucketI.map((item) => `${item.title} [${item.status}]`), "none", 6)}.` : undefined,
 		]
 			.filter((item): item is string => Boolean(item))
 			.join("\n");
 	}
-	if (unchangedFiles.length) return `- File hashes still match prior inspection for: ${inlineList(unchangedFiles, "none", 8)}. Re-inspect changed files and any new dependencies before relying on older facts.`;
-	return "- none; current worktree fingerprint differs from the last cached phase evidence.";
+	if (unchangedFiles.length) return `- File hashes still match prior inspection for: ${inlineList(unchangedFiles, "none", 8)}; re-inspect changed files and new dependencies.`;
+	return "";
 }
 
 function hasUiStateTerms(state: LoopState): boolean {
@@ -165,17 +164,24 @@ function stateMatrixChecklist(state: LoopState): string {
 }
 
 function reusableEvidenceSection(state: LoopState, current?: WorktreeFingerprint): string {
-	return `Still-current evidence cache:\n${renderStillCurrentEvidence(state, current)}\n\nReusable validation cache:\n${renderReusableValidation(state, current)}\n\nUse cached evidence only when the listed hashes are unchanged. You must inspect files changed since that evidence and any new file needed for this phase. If a validation command is reused, submit it with source \"reused\" and note the unchanged input hash; rerun when uncertain.`;
+	const evidence = renderStillCurrentEvidence(state, current);
+	const validation = renderReusableValidation(state, current);
+	const sections = [
+		evidence ? `Still-current evidence:\n${evidence}` : undefined,
+		validation !== "- none" ? `Reusable validation:\n${validation}` : undefined,
+	].filter((section): section is string => Boolean(section));
+	if (!sections.length) return "Reusable evidence: none; inspect normally.";
+	return `${sections.join("\n\n")}\n\nReuse only the listed unchanged evidence; re-inspect changed files or uncertain validation inputs.`;
 }
 
-function rejectedLines(items: RejectedItem[]): string {
+function rejectedLines(items: RejectedItem[]): string | undefined {
 	const byTitle = new Map<string, string>();
 	for (const item of items) {
 		const title = line(item.title);
 		if (title) byTitle.set(title.toLowerCase(), title);
 	}
 	const titles = Array.from(byTitle.values());
-	if (!titles.length) return "Rejected/kept as-is: none";
+	if (!titles.length) return undefined;
 	return `Rejected/kept as-is (${titles.length}): ${inlineList(titles, "none", 8)}`;
 }
 
@@ -184,22 +190,28 @@ export function renderLedgerSummary(state: LoopState, phase: Phase = state.phase
 	const bucketIBatch = bucketIBatchForPhase(currentBucketI, phase);
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 	const unresolvedBucketII = countCurrentUnresolvedBucketII(state.bucketII);
-	return `Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${promptLine(state.lastGate.reason, 260)}` : "none yet"}
-Files in phase scope: ${state.filesChanged.length} total (${inlineList(state.filesChanged)})
-Baseline files: ${state.baseline.scopedFiles.length} total (${inlineList(state.baseline.scopedFiles)})
-
-${bucketIStatusSummary(bucketIBatch, phase, state.bucketI.length)}
-${bucketILines(bucketIBatch.shown)}
-${bucketIBatchOverflowLine(bucketIBatch) ?? ""}
-${appliedBucketILines(currentBucketI)}
-
-Bucket II current (${unresolvedBucketII} unresolved / ${currentBucketII.length} current; showing ${Math.min(currentBucketII.length, BUCKET_II_PROMPT_BATCH_LIMIT)}):
-${bucketIIBatchLines(currentBucketII)}
-
-Recent validation (${state.validation.length} total; failures prioritized):
-${validationLines(state.validation)}
-
-${rejectedLines(state.rejectedOrKeptAsIs)}`;
+	const showBaselineFiles = state.phasesRun.length === 0 && state.baseline.scopedFiles.length > 0;
+	const hasBucketII = currentBucketII.length > 0;
+	const rejected = rejectedLines(state.rejectedOrKeptAsIs);
+	const lines = [
+		`Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${promptLine(state.lastGate.reason, 260)}` : "none yet"}`,
+		state.filesChanged.length ? `Phase-scope files so far: ${state.filesChanged.length} (${inlineList(state.filesChanged)})` : undefined,
+		showBaselineFiles ? `Baseline files: ${state.baseline.scopedFiles.length} (${inlineList(state.baseline.scopedFiles)})` : undefined,
+		"",
+		bucketIStatusSummary(bucketIBatch, phase, state.bucketI.length),
+		bucketILines(bucketIBatch.shown),
+		bucketIBatchOverflowLine(bucketIBatch),
+		appliedBucketILines(currentBucketI),
+		hasBucketII ? "" : undefined,
+		hasBucketII ? `Bucket II current (${unresolvedBucketII} unresolved / ${currentBucketII.length} current; showing ${Math.min(currentBucketII.length, BUCKET_II_PROMPT_BATCH_LIMIT)}):` : undefined,
+		hasBucketII ? bucketIIBatchLines(currentBucketII) : undefined,
+		state.validation.length ? "" : undefined,
+		state.validation.length ? `Recent validation (${state.validation.length} total; failures prioritized):` : undefined,
+		state.validation.length ? validationLines(state.validation) : undefined,
+		rejected ? "" : undefined,
+		rejected,
+	];
+	return lines.filter((item): item is string => item !== undefined).join("\n");
 }
 
 function commonHeader(state: LoopState, phase: Phase, currentFingerprint?: WorktreeFingerprint): string {
@@ -208,7 +220,6 @@ function commonHeader(state: LoopState, phase: Phase, currentFingerprint?: Workt
 Scope: ${promptLine(state.scope, 600)}
 Phase: ${phase}
 Iteration: ${state.iteration}/${state.limit}
-Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${promptLine(state.lastGate.reason, 260)}` : "none yet"}
 Lifecycle: ${state.lifecycle}
 Current fingerprint: ${currentFingerprint ? shortHash(currentFingerprint.overallHash) : "unavailable; inspect normally"}
 
@@ -249,9 +260,15 @@ function selectiveBaselineCheckpointInstruction(state: LoopState): string {
 
 function coreRules(state: LoopState): string {
 	const firstPhase = state.phasesRun.length === 0;
-	const firstPhaseOnly = firstPhase
-		? "\n- For the first post-review phase, submit reviewTargetBriefing: one or two approachable paragraphs explaining the review target itself, not loop activity."
-		: "";
+	if (!firstPhase) {
+		return `Rules:
+- Inspect real files/diffs needed for this phase; reuse cached facts only when the listed hashes still match.
+- Bucket I is auto-fix-track; Bucket II needs explicit approval. Classify each finding with an allowed designSignal.
+- Prefer strong, root-cause findings and integrated fixes; reject speculative polish, wrappers, and broad future-proofing.
+- Batch related Bucket I work that shares files, modules, or state domains; hidden prompt-batch items remain active unless you inspect full status/report.
+- Submit only new/materially changed Bucket II items; reuse existing titles for updates.
+- End by calling post_review_loop_submit_phase_result; do not freehand the final report.`;
+	}
 	return `Rules:
 - Inspect real files and diffs before submitting; do not rely only on this prompt.
 - You may cite still-current evidence when the extension-provided fingerprint/file hashes match; re-inspect files changed since that evidence and any new dependencies.
@@ -268,7 +285,8 @@ function coreRules(state: LoopState): string {
 - Batch closely related Bucket I work that shares files, modules, or state domains; do not stop after only the first related item when the rest can be safely verified or fixed together.
 - If the compact ledger says active items are queued outside this prompt batch, work only on the shown relevant batch unless you explicitly inspect full status/report; hidden items remain active in the persisted ledger and must not be marked resolved by omission.
 - Submit only new/materially changed Bucket II items; reuse an existing title verbatim to update it.
-- End the phase by calling post_review_loop_submit_phase_result. Do not freehand the final report.${firstPhaseOnly}`;
+- For the first post-review phase, submit reviewTargetBriefing: one or two approachable paragraphs explaining the review target itself, not loop activity.
+- End the phase by calling post_review_loop_submit_phase_result. Do not freehand the final report.`;
 }
 
 function codeChangeLines(state: LoopState): string {
@@ -306,7 +324,10 @@ Task:
 - After the commit decision, call post_review_loop_submit_final_commit_result. Do not call post_review_loop_submit_phase_result again.`;
 }
 
-function schemaReminder(): string {
+function schemaReminder(state: LoopState): string {
+	if (state.phasesRun.length > 0) {
+		return `Structured result reminder: submit summary, changedFiles, validation, Bucket I/Bucket II with exact statuses/designSignal, rejectedOrKeptAsIs, codeChanges for loop edits only, and an ordinary commitMessage when useful.`;
+	}
 	return `Structured result reminder:
 - summary: 1-3 short sentences about the code/behavior reviewed or changed.
 - validation: required; use "skipped" with a reason when no code changed; set source "reused" when citing a validation-cache entry with unchanged inputs.
@@ -330,7 +351,7 @@ Task: review the current diff and nearby architecture. Do not edit code. Record 
 
 ${coreRules(state)}
 
-${schemaReminder()}`;
+${schemaReminder(state)}`;
 	}
 
 	if (phase === "impl-review") {
@@ -340,7 +361,7 @@ Task: re-verify each actionable Bucket I item against actual code paths and test
 
 ${coreRules(state)}
 
-${schemaReminder()}`;
+${schemaReminder(state)}`;
 	}
 
 	return `${header}${firstAction}
@@ -349,7 +370,7 @@ Task: implement all accepted Bucket I fixes unless a concrete blocker appears. K
 
 ${coreRules(state)}
 
-${schemaReminder()}`;
+${schemaReminder(state)}`;
 }
 
 export function resumePrompt(state: LoopState, options: { currentFingerprint?: WorktreeFingerprint } = {}): string {

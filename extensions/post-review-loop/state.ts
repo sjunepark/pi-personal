@@ -19,6 +19,9 @@ import type {
 } from "./types.js";
 import { DEFAULT_LIMIT, ENTRY_TYPE, MAX_SCOPE_CHARS } from "./types.js";
 
+const MAX_VALIDATION_CACHE_ENTRIES = 24;
+const MAX_PHASE_EVIDENCE_CACHES = 4;
+
 function now(): number {
 	return Date.now();
 }
@@ -327,8 +330,8 @@ export class ReviewLoopRuntime {
 			commitMessage,
 			filesChanged: unique([...this.#state.filesChanged, ...result.changedFiles, ...result.codeChanges.flatMap((item) => item.files)]),
 			validation: [...this.#state.validation, ...result.validation],
-			validationCache: [...(this.#state.validationCache ?? []), ...nextValidationCache],
-			phaseCaches: [...(this.#state.phaseCaches ?? []), ...nextPhaseCache],
+			validationCache: [...(this.#state.validationCache ?? []), ...nextValidationCache].slice(-MAX_VALIDATION_CACHE_ENTRIES),
+			phaseCaches: [...(this.#state.phaseCaches ?? []), ...nextPhaseCache].slice(-MAX_PHASE_EVIDENCE_CACHES),
 			bucketI: [...this.#state.bucketI, ...result.bucketI],
 			bucketII,
 			codeChanges: [...this.#state.codeChanges, ...result.codeChanges],
