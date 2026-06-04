@@ -23,8 +23,7 @@ export type Verdict =
 	| "Loop stopped: review-only pass completed"
 	| "Loop stopped: Bucket I fixes were not applied"
 	| "Loop stopped: user requested stop"
-	| "Loop stopped: scope or context needed"
-	| "Loop stopped: checkpoint compaction unavailable";
+	| "Loop stopped: scope or context needed";
 
 export type ControlRequest = {
 	action: "pause" | "stop";
@@ -188,7 +187,6 @@ export type GateSnapshot = {
 	reviewOnly: boolean;
 	scopeBlocked: boolean;
 	validationBlocked: boolean;
-	checkpointUnavailable: boolean;
 	bucketICandidates: number;
 	acceptedBucketI: number;
 	appliedBucketI: number;
@@ -199,13 +197,13 @@ export type GateDecision =
 	| {
 			decision: "continue";
 			nextPhase: Phase;
-			checkpointRequired: true;
+			phasePromptRequired: true;
 			reason: string;
 	  }
 	| {
 			decision: "stop";
 			nextPhase: "final-report";
-			checkpointRequired: false;
+			phasePromptRequired: false;
 			reason: string;
 			verdict: Verdict;
 	  };

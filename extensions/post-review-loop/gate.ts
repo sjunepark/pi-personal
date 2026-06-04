@@ -8,7 +8,6 @@ function verdictFor(reason: string): Verdict {
 	if (reason.includes("user requested stop")) return "Loop stopped: user requested stop";
 	if (reason.includes("review-only")) return "Loop stopped: review-only pass completed";
 	if (reason.includes("scope") || reason.includes("context")) return "Loop stopped: scope or context needed";
-	if (reason.includes("checkpoint")) return "Loop stopped: checkpoint compaction unavailable";
 	return "Loop clean: no accepted/actionable Bucket I findings remain";
 }
 
@@ -16,21 +15,20 @@ export function stopDecision(reason: string): GateDecision {
 	return {
 		decision: "stop",
 		nextPhase: "final-report",
-		checkpointRequired: false,
+		phasePromptRequired: false,
 		reason,
 		verdict: verdictFor(reason),
 	};
 }
 
 function cont(nextPhase: Phase, reason: string): GateDecision {
-	return { decision: "continue", nextPhase, checkpointRequired: true, reason };
+	return { decision: "continue", nextPhase, phasePromptRequired: true, reason };
 }
 
 export function decideNext(snapshot: GateSnapshot): GateDecision {
 	if (snapshot.limit < 1) throw new Error("limit must be at least 1");
 	if (snapshot.iteration < 1) throw new Error("iteration must be at least 1");
 
-	if (snapshot.checkpointUnavailable) return stopDecision("checkpoint compaction unavailable");
 	if (snapshot.reviewOnly) {
 		const hasUnappliedBucketI = snapshot.bucketICandidates > 0 || snapshot.acceptedBucketI > 0;
 		return stopDecision(hasUnappliedBucketI ? "review-only pass completed with Bucket I items not applied" : "user requested a review-only pass");
@@ -44,7 +42,7 @@ export function decideNext(snapshot: GateSnapshot): GateDecision {
 			return stopDecision("no Bucket I candidates found");
 		}
 		if (snapshot.iteration >= snapshot.limit) return stopDecision("iteration limit reached after post-review");
-		return cont("impl-review", "Bucket I candidates exist; checkpoint before verification/planning");
+		return cont("impl-review", "Bucket I candidates exist; continue to verification/planning");
 	}
 
 	if (snapshot.phase === "impl-review") {
@@ -53,9 +51,9 @@ export function decideNext(snapshot: GateSnapshot): GateDecision {
 			return stopDecision("no accepted/actionable Bucket I items remain");
 		}
 		if (snapshot.iteration >= snapshot.limit) return stopDecision("iteration limit reached before implementation");
-		return cont("impl", "accepted/actionable Bucket I work exists; checkpoint before implementation");
+		return cont("impl", "accepted/actionable Bucket I work exists; continue to implementation");
 	}
 
 	if (snapshot.appliedBucketI === 0) return stopDecision("implementation phase applied no Bucket I fixes");
-	return cont("post-review", "implementation completed; checkpoint before the next review");
+	return cont("post-review", "implementation completed; continue to the next review");
 }

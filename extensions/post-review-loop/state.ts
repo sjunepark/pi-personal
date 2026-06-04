@@ -68,6 +68,8 @@ const FULL_STATE_EVENTS = new Set([
 	"checkpoint-skipped",
 	"checkpoint-failed",
 	"checkpoint-restored-paused",
+	"initial-compaction-failed",
+	"initial-compaction-unavailable",
 	"reload-paused",
 	"paused",
 	"pause-requested",
@@ -104,7 +106,6 @@ function countForPhase(state: LoopState, result: PhaseResult, validationBlocked:
 		reviewOnly: state.reviewOnly,
 		scopeBlocked: result.scopeBlocked === true,
 		validationBlocked,
-		checkpointUnavailable: false,
 		bucketICandidates,
 		acceptedBucketI,
 		appliedBucketI,
@@ -187,16 +188,11 @@ function phaseEvidenceCache(result: PhaseResult, fingerprint: WorktreeFingerprin
 	};
 }
 
-function checkpointHasReachedControlBoundary(state: LoopState, request: ControlRequest): boolean {
-	return state.phase === "post-review" && state.iteration > request.afterIteration;
-}
-
 function resultCompletesRequestedIteration(result: PhaseResult, gate: GateDecision, request: ControlRequest): boolean {
 	return gate.decision === "continue" && result.phase === "impl" && gate.nextPhase === "post-review" && result.iteration >= request.afterIteration;
 }
 
 function controlAfterIteration(state: LoopState): number {
-	if (state.lifecycle === "checkpointing" && state.phase === "post-review" && state.iteration > 1) return state.iteration - 1;
 	return state.iteration;
 }
 
@@ -283,7 +279,7 @@ export class ReviewLoopRuntime {
 		const gate: GateDecision = {
 			decision: "stop",
 			nextPhase: "final-report",
-			checkpointRequired: false,
+			phasePromptRequired: false,
 			reason,
 			verdict: reason.toLowerCase().includes("validation") ? "Loop stopped: validation failure remains" : "Loop stopped: scope or context needed",
 		};
@@ -313,8 +309,9 @@ export class ReviewLoopRuntime {
 		const gate = control?.action === "stop" && resultCompletesRequestedIteration(result, decidedGate, control) ? stopDecision("user requested stop after current iteration") : decidedGate;
 		const nextIteration = gate.decision === "continue" && result.phase === "impl" && gate.nextPhase === "post-review" ? this.#state.iteration + 1 : this.#state.iteration;
 		const nextPhase = gate.decision === "continue" ? gate.nextPhase : "final-report";
-		const lifecycle = gate.decision === "continue" ? "checkpointing" : "complete";
-		const keepControlRequest = gate.decision === "continue" ? control : undefined;
+		const pauseAtBoundary = control?.action === "pause" && resultCompletesRequestedIteration(result, gate, control);
+		const lifecycle = gate.decision === "continue" ? (pauseAtBoundary ? "paused" : "active") : "complete";
+		const keepControlRequest = gate.decision === "continue" && !pauseAtBoundary ? control : undefined;
 		const bucketII = mergeBucketIIItems(this.#state.bucketII, result.bucketII);
 		const reviewTargetBriefing = result.reviewTargetBriefing?.trim() || this.#state.reviewTargetBriefing;
 		const commitMessage = result.commitMessage?.subject.trim() ? { subject: result.commitMessage.subject.trim(), body: result.commitMessage.body?.trim() } : this.#state.commitMessage;
@@ -347,25 +344,7 @@ export class ReviewLoopRuntime {
 		return { state: this.state!, gate };
 	}
 
-	markCheckpointReady(): LoopState {
-		if (!this.#state) throw new Error("No post-review-loop is active.");
-		if (this.#state.lifecycle !== "checkpointing") throw new Error(`Loop is ${this.#state.lifecycle}, not checkpointing.`);
-		const control = this.#state.controlRequest;
-		if (control?.action === "stop" && checkpointHasReachedControlBoundary(this.#state, control)) {
-			const gate = stopDecision("user requested stop after current iteration");
-			this.#state = { ...this.#state, lifecycle: "complete", phase: "final-report", lastGate: gate, controlRequest: undefined, updatedAt: now() };
-			this.#state.afterReviewCommit = normalizeAfterReviewCommit(this.#state);
-			return this.state!;
-		}
-		if (control?.action === "pause" && checkpointHasReachedControlBoundary(this.#state, control)) {
-			this.#state = { ...this.#state, lifecycle: "paused", controlRequest: undefined, updatedAt: now() };
-			return this.state!;
-		}
-		this.#state = { ...this.#state, lifecycle: "active", updatedAt: now() };
-		return this.state!;
-	}
-
-	markCheckpointFailed(error: string): LoopState {
+	pauseWithError(error: string): LoopState {
 		if (!this.#state) throw new Error("No post-review-loop is active.");
 		this.#state = { ...this.#state, lifecycle: "paused", lastError: error, updatedAt: now() };
 		return this.state!;

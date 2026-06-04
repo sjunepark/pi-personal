@@ -161,7 +161,7 @@ function hasUiStateTerms(state: LoopState): boolean {
 
 function stateMatrixChecklist(state: LoopState): string {
 	if (!hasUiStateTerms(state)) return "";
-	return `\n\nUI/state enablement checklist:\n- For toolbar, button, label, disabled, readiness, availability, permission, bridge, settings, repair, or action findings, review related state combinations together instead of one label/action at a time.\n- Consider dimensions such as external bridge/loading/error/ready, app settings loading/ready/repairable/unavailable, run action run/resume/complete, and in-flight idle/running/restoring.\n- If multiple Bucket I issues share these state domains or files, batch them in one accepted/applied group before checkpointing.`;
+	return `\n\nUI/state enablement checklist:\n- For toolbar, button, label, disabled, readiness, availability, permission, bridge, settings, repair, or action findings, review related state combinations together instead of one label/action at a time.\n- Consider dimensions such as external bridge/loading/error/ready, app settings loading/ready/repairable/unavailable, run action run/resume/complete, and in-flight idle/running/restoring.\n- If multiple Bucket I issues share these state domains or files, batch them in one accepted/applied group before ending the phase.`;
 }
 
 function reusableEvidenceSection(state: LoopState, current?: WorktreeFingerprint): string {
@@ -209,7 +209,7 @@ Scope: ${promptLine(state.scope, 600)}
 Phase: ${phase}
 Iteration: ${state.iteration}/${state.limit}
 Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${promptLine(state.lastGate.reason, 260)}` : "none yet"}
-Checkpoint: ${state.lifecycle}
+Lifecycle: ${state.lifecycle}
 Current fingerprint: ${currentFingerprint ? shortHash(currentFingerprint.overallHash) : "unavailable; inspect normally"}
 
 Compact ledger:
@@ -265,7 +265,7 @@ function coreRules(state: LoopState): string {
 - Prefer integrated fixes over wrappers, compatibility layers, or bandages.
 - When a Bucket I fix suggests a plausible broader refactor/redesign would better address the underlying shape, still apply the safe Bucket I fix when appropriate, but also submit a Bucket II item explaining the broader option, tradeoffs, and why it needs explicit approval before implementation.
 - Do not invent refactor alternatives for every fix. Record the broader-refactor Bucket II only when actual inspected code shows meaningful ownership, boundary, abstraction, lifecycle, schema/type, or integration implications beyond the safe fix.
-- Batch closely related Bucket I work that shares files, modules, or state domains; do not checkpoint after only the first related item when the rest can be safely verified or fixed together.
+- Batch closely related Bucket I work that shares files, modules, or state domains; do not stop after only the first related item when the rest can be safely verified or fixed together.
 - If the compact ledger says active items are queued outside this prompt batch, work only on the shown relevant batch unless you explicitly inspect full status/report; hidden items remain active in the persisted ledger and must not be marked resolved by omission.
 - Submit only new/materially changed Bucket II items; reuse an existing title verbatim to update it.
 - End the phase by calling post_review_loop_submit_phase_result. Do not freehand the final report.${firstPhaseOnly}`;
@@ -336,7 +336,7 @@ ${schemaReminder()}`;
 	if (phase === "impl-review") {
 		return `${header}${firstAction}
 
-Task: re-verify each actionable Bucket I item against actual code paths and tests. Do not edit code. Mark safe, in-scope, root-cause-fixable items as accepted/remaining; reject, downgrade, or move uncertain items to Bucket II. If related candidates share files or state terms, verify them as one batch and accept/reject the batch before checkpointing.${matrix}
+Task: re-verify each actionable Bucket I item against actual code paths and tests. Do not edit code. Mark safe, in-scope, root-cause-fixable items as accepted/remaining; reject, downgrade, or move uncertain items to Bucket II. If related candidates share files or state terms, verify them as one batch and accept/reject the batch together.${matrix}
 
 ${coreRules(state)}
 

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { ReviewLoopCompactor } from "./compact.js";
+import { agentCompaction } from "../agent-compaction.js";
 import { computeWorktreeFingerprint, createAfterReviewCommit, establishBaseline, failedAfterReviewCommit, needsAgentSelectedAfterReviewCommit } from "./git.js";
 import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import { finalCommitPrompt, oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
@@ -19,10 +19,12 @@ type RuntimeDeps = { Markdown: MarkdownConstructor; getMarkdownTheme: () => unkn
 type PendingMarkdownMessage = { title: string; markdown: string };
 
 const runtime = new ReviewLoopRuntime();
-const compactor = new ReviewLoopCompactor();
 let runtimeDeps: RuntimeDeps | undefined;
 const pendingMarkdownMessages: PendingMarkdownMessage[] = [];
 let agentActive = false;
+let pendingPhasePrompt: LoopState | null = null;
+let scheduledPhasePrompt: ReturnType<typeof setTimeout> | null = null;
+let phasePromptScheduleVersion = 0;
 const MARKDOWN_MESSAGE_TYPE = "post-review-loop-markdown";
 const DEFAULT_REVIEW_SCOPE = "uncommitted changes";
 const COMPACT_STATUS_ITEM_LIMIT = 8;
@@ -232,6 +234,39 @@ function flushQueuedMarkdownMessagesAfterAgent(pi: ExtensionAPI, ctx: ExtensionC
 	for (const message of messages) sendMarkdownMessageWhenIdle(pi, ctx, message);
 }
 
+function clearScheduledPhasePrompt(): void {
+	phasePromptScheduleVersion += 1;
+	if (!scheduledPhasePrompt) return;
+	clearTimeout(scheduledPhasePrompt);
+	scheduledPhasePrompt = null;
+}
+
+function sendPhasePromptWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, state: LoopState): void {
+	clearScheduledPhasePrompt();
+	const version = phasePromptScheduleVersion;
+	const poll = () => {
+		if (version !== phasePromptScheduleVersion) return;
+		if (!ctx.isIdle()) {
+			scheduledPhasePrompt = setTimeout(poll, 25);
+			return;
+		}
+		scheduledPhasePrompt = null;
+		sendPhasePrompt(pi, ctx, state);
+	};
+	scheduledPhasePrompt = setTimeout(poll, 25);
+}
+
+function queuePhasePromptAfterAgent(state: LoopState): void {
+	pendingPhasePrompt = state;
+}
+
+function flushQueuedPhasePromptAfterAgent(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	const state = pendingPhasePrompt;
+	pendingPhasePrompt = null;
+	if (!state || state.lifecycle !== "active" || state.phase === "final-report") return;
+	sendPhasePromptWhenIdle(pi, ctx, state);
+}
+
 function compactText(value: string): string {
 	return value.trim().replace(/\s+/g, " ");
 }
@@ -277,10 +312,6 @@ function currentFailedValidation(state: LoopState): ValidationResult[] {
 	return Array.from(latestByCommand.values()).filter((record) => record.result === "failed");
 }
 
-function pauseAfterCheckpoint(state: LoopState): boolean {
-	return state.lifecycle === "checkpointing" && state.phase === "post-review" && state.controlRequest?.action === "pause" && state.iteration > state.controlRequest.afterIteration;
-}
-
 function unique(values: string[]): string[] {
 	return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
@@ -324,7 +355,7 @@ function compactStatusMarkdown(state: LoopState | null, options: { currentFinger
 		`- Scope: ${compactStatusText(state.scope, 600)}`,
 		`- Last gate: ${state.lastGate ? `${state.lastGate.decision}: ${compactStatusText(state.lastGate.reason, 260)}` : "none"}`,
 		state.controlRequest ? `- Pending request: ${controlRequestText(state.controlRequest)}` : undefined,
-		compactor.pending ? "- Checkpoint: pending" : "- Checkpoint: none",
+		agentCompaction.busy ? "- Agent compaction: pending" : undefined,
 		state.lastError ? `- Last error: ${compactStatusText(state.lastError, 260)}` : undefined,
 		"",
 		"## Required Next Action",
@@ -362,17 +393,17 @@ function statusMarkdown(state: LoopState | null, options: { full?: boolean; curr
 }
 
 function requiredNextAction(state: LoopState): string {
+	if (agentCompaction.busy) return "Wait for the pending agent-facing compaction to finish; do not submit a phase result yet.";
 	const control = controlRequestText(state.controlRequest);
 	if (state.lifecycle === "complete") return "No further post-review-loop action is required. The final report has been rendered or is available from post_review_loop_get_state and /post-review-loop report.";
 	if (state.lifecycle === "finalizing") return "Create or verify the selective after-review commit for loop-applied edits, then call post_review_loop_submit_final_commit_result.";
-	if (state.lifecycle === "checkpointing") return control ? `Stop substantial work and wait for checkpoint evaluation to finish; pending request: ${control}.` : "Stop substantial work and wait for checkpoint evaluation to finish.";
 	if (state.lifecycle === "paused") return "Resume the loop before submitting another phase result.";
 	if (state.phase === "final-report") return "Render or inspect the final report.";
 	return `Complete ${state.phase} iteration ${state.iteration}, then call post_review_loop_submit_phase_result.${control ? ` Pending request: ${control}.` : ""}`;
 }
 
 function compactToolDetails(state: LoopState | null, extra: Record<string, unknown> = {}): Record<string, unknown> {
-	if (!state) return { state: null, checkpointPending: compactor.pending, ...extra };
+	if (!state) return { state: null, agentCompactionPending: agentCompaction.busy, ...extra };
 	const currentBucketI = currentBucketIItems(state.bucketI);
 	const currentBucketII = currentBucketIIItems(state.bucketII);
 	return {
@@ -393,7 +424,7 @@ function compactToolDetails(state: LoopState | null, extra: Record<string, unkno
 				.map((item) => ({ ...item, command: compactStatusText(item.command), notes: compactStatusText(item.notes, 260) })),
 			requiredNextAction: requiredNextAction(state),
 		},
-		checkpointPending: compactor.pending,
+		agentCompactionPending: agentCompaction.busy,
 		...extra,
 	};
 }
@@ -472,16 +503,19 @@ function renderReportOnly(options: { full?: boolean } = {}): string {
 	return state.lifecycle === "complete" ? renderFinalReport(state, options) : renderCurrentReport(state, options);
 }
 
-function cancelLoop(pi: ExtensionAPI, ctx: ExtensionContext): { hadState: boolean; hadPendingCheckpoint: boolean; abortedAgent: boolean } {
-	const hadPendingCheckpoint = compactor.pending;
+function cancelLoop(pi: ExtensionAPI, ctx: ExtensionContext): { hadState: boolean; hadPendingPrompt: boolean; hadPendingCompaction: boolean; abortedAgent: boolean } {
+	const hadPendingPrompt = pendingPhasePrompt !== null;
+	const hadPendingCompaction = agentCompaction.pendingSource?.startsWith("post-review-loop:") === true;
 	const previous = runtime.clear();
 	const hadState = Boolean(previous);
-	if (!hadState && !hadPendingCheckpoint) return { hadState, hadPendingCheckpoint, abortedAgent: false };
+	if (!hadState && !hadPendingPrompt && !hadPendingCompaction) return { hadState, hadPendingPrompt, hadPendingCompaction, abortedAgent: false };
 
-	compactor.clear(pi);
+	pendingPhasePrompt = null;
+	clearScheduledPhasePrompt();
+	if (hadPendingCompaction) agentCompaction.clearSource("post-review-loop:");
 	pendingMarkdownMessages.splice(0);
 	persist(pi, ctx, "cancelled");
-	return { hadState, hadPendingCheckpoint, abortedAgent: !ctx.isIdle() };
+	return { hadState, hadPendingPrompt, hadPendingCompaction, abortedAgent: !ctx.isIdle() };
 }
 
 const BUCKET_I_STATUSES: BucketIStatus[] = ["candidate", "accepted", "applied", "rejected", "remaining", "downgraded"];
@@ -583,6 +617,72 @@ function sendPhasePrompt(pi: ExtensionAPI, ctx: ExtensionContext, state: LoopSta
 	pi.sendUserMessage(phasePrompt(state, state.phase, { currentFingerprint: currentFingerprintForState(ctx, state) }), { deliverAs: "followUp" });
 }
 
+function initialCompactionRequestMessage(kind: "start" | "oneshot", scope: string, nextAction: string): string {
+	return `Post-review-loop initial context compaction required before ${kind}.
+
+This is an agent-facing workflow kickoff, not a request for the human user. Before any review work, call compact_conversation with a high-fidelity compacted working context, then stop this turn.
+
+Why this is required:
+- The post-review-loop is a multi-step workflow, so it should start from a small high-signal context.
+- The loop no longer compacts after each phase; mid-iteration pressure is handled later by context-compaction-guard threshold checkpoints.
+- Starting with an agent-authored summary avoids relying on pi's generic compaction summary for workflow state.
+
+Your compact_conversation summary should preserve:
+## Current task
+- User requested /post-review-loop ${kind}.
+- Scope: ${compactStatusText(scope, 1200)}
+- After compaction: ${nextAction}
+## User constraints and preferences
+## Current repository/session state needed to continue
+## Files and code already inspected, with relevant snippets when needed
+## Files modified / pending edits
+## Commands and validation results
+## Errors, blockers, and open questions
+## Next actions
+
+Do not inspect new files or start the review before compacting. If compaction fails, do not continue implicitly; the extension will pause instead.`;
+}
+
+function requestInitialLoopCompaction(pi: ExtensionAPI, ctx: ExtensionContext, state: LoopState): void {
+	const ok = agentCompaction.request(pi, ctx, {
+		source: "post-review-loop:start",
+		message: initialCompactionRequestMessage("start", state.scope, "the extension will inject the first authoritative phase prompt"),
+		details: { loopId: state.id, phase: state.phase, iteration: state.iteration },
+		onComplete: () => {
+			const current = runtime.state;
+			if (!current || current.id !== state.id || current.lifecycle !== "active") return;
+			sendPhasePrompt(pi, ctx, current);
+		},
+		onError: (_pi, _ctx, error) => {
+			const current = runtime.state;
+			if (!current || current.id !== state.id) return;
+			runtime.pauseImmediately();
+			persist(pi, ctx, "initial-compaction-failed");
+			notify(ctx, `Post-review-loop paused because initial compaction failed: ${error.message}. Use /post-review-loop resume to continue explicitly.`, "error");
+		},
+	});
+	if (ok) return;
+	runtime.pauseImmediately();
+	persist(pi, ctx, "initial-compaction-unavailable");
+	notify(ctx, "Post-review-loop paused because another compaction is already pending. Use /post-review-loop resume to continue explicitly.", "warning");
+}
+
+function requestInitialOneshotCompaction(pi: ExtensionAPI, ctx: ExtensionContext, scope: string, reviewOnly: boolean): void {
+	const ok = agentCompaction.request(pi, ctx, {
+		source: "post-review-loop:oneshot",
+		message: initialCompactionRequestMessage("oneshot", scope, "the extension will inject the stateless one-shot review prompt"),
+		details: { scope, reviewOnly },
+		onComplete: () => {
+			pi.sendUserMessage(oneshotPrompt(scope, { reviewOnly }), { deliverAs: "followUp" });
+		},
+		onError: (_pi, _ctx, error) => {
+			notify(ctx, `Post-review-loop oneshot paused because initial compaction failed: ${error.message}. Rerun /post-review-loop oneshot when ready.`, "error");
+		},
+	});
+	if (ok) return;
+	notify(ctx, "Post-review-loop oneshot paused because another compaction is already pending. Rerun /post-review-loop oneshot when ready.", "warning");
+}
+
 function registerCommand(pi: ExtensionAPI, name: string): void {
 	pi.registerCommand(name, {
 		description: "Run the deterministic post-review-loop workflow or a stateless oneshot review",
@@ -619,13 +719,13 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 
 			if (subcommand === "cancel") {
 				const result = cancelLoop(pi, ctx);
-				if (!result.hadState && !result.hadPendingCheckpoint) {
+				if (!result.hadState && !result.hadPendingPrompt && !result.hadPendingCompaction) {
 					notify(ctx, "No post-review-loop state to cancel.", "info");
 					return;
 				}
 				notify(
 					ctx,
-					`Post-review-loop cancelled and state cleared.${result.hadPendingCheckpoint ? " Pending checkpoint discarded." : ""}${result.abortedAgent ? " Active agent turn aborted." : ""}`,
+					`Post-review-loop cancelled and state cleared.${result.hadPendingPrompt ? " Pending phase prompt discarded." : ""}${result.hadPendingCompaction ? " Pending initial compaction discarded." : ""}${result.abortedAgent ? " Active agent turn aborted." : ""}`,
 					"info",
 				);
 				if (result.abortedAgent) ctx.abort();
@@ -695,16 +795,16 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				const parsed = parseStartArgs(restText);
 				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
 				const state = startLoop(pi, ctx, scope, { limit: parsed.limit, reviewOnly: parsed.reviewOnly, gitCheckpoint: parsed.gitCheckpoint });
-				notify(ctx, `Post-review-loop started: ${compactText(state.scope)}`, "info");
-				sendPhasePrompt(pi, ctx, state);
+				notify(ctx, `Post-review-loop started: ${compactText(state.scope)}; initial compaction required before the first phase.`, "info");
+				requestInitialLoopCompaction(pi, ctx, state);
 				return;
 			}
 
 			if (subcommand === "oneshot") {
 				const parsed = parseOneshotArgs(restText);
 				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
-				notify(ctx, `Post-review-loop oneshot: ${compactText(scope)}`, "info");
-				pi.sendUserMessage(oneshotPrompt(scope, { reviewOnly: parsed.reviewOnly }), { deliverAs: "followUp" });
+				notify(ctx, `Post-review-loop oneshot: ${compactText(scope)}; initial compaction required before review.`, "info");
+				requestInitialOneshotCompaction(pi, ctx, scope, parsed.reviewOnly);
 				return;
 			}
 
@@ -714,6 +814,7 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 }
 
 export default function postReviewLoop(pi: ExtensionAPI): void {
+	agentCompaction.register(pi);
 	registerMarkdownRenderer(pi);
 	registerCommand(pi, "post-review-loop");
 
@@ -783,21 +884,32 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 					return textToolResult(`Post-review-loop stopped. Final report:\n\n${report}`, compactToolDetails(runtime.state, { gate, report }), false, true);
 				}
 
-				const queued = compactor.queue(ctx, state);
-				persist(pi, ctx, queued ? "checkpoint-queued" : "checkpoint-queue-rejected");
-				if (!queued) return textToolResult("A checkpoint is already pending. Stop substantial work and wait for the next phase prompt.", compactToolDetails(state, { gate }), true, true);
-				const willPause = pauseAfterCheckpoint(state);
+				if (state.lifecycle === "paused") {
+					return textToolResult(
+						"Phase result accepted. Current iteration completed and the loop is paused before the next phase prompt. Use /post-review-loop resume to continue explicitly.",
+						compactToolDetails(state, {
+							gate,
+							notify: {
+								suppressCompletion: true,
+								status: "Paused",
+								logMessage: "Post-review-loop iteration accepted; loop paused before next phase",
+							},
+						}),
+						false,
+						true,
+					);
+				}
+
+				queuePhasePromptAfterAgent(state);
 				return textToolResult(
-					willPause
-						? "Phase result accepted. Current iteration completed; checkpoint evaluation is queued and the loop will pause before the next phase prompt. Compaction will run only if context usage is over 60%."
-						: `Phase result accepted. Gate decision: continue to ${gate.nextPhase}. Checkpoint evaluation is queued; compaction will run only if context usage is over 60%. Stop substantial work for this turn.`,
+					`Phase result accepted. Gate decision: continue to ${gate.nextPhase}. The next authoritative phase prompt is queued; stop substantial work for this turn.`,
 					compactToolDetails(state, {
 						gate,
-						checkpointPending: true,
+						nextPhasePromptPending: true,
 						notify: {
 							suppressCompletion: true,
-							status: willPause ? "Pausing" : "Continuing",
-							logMessage: willPause ? "Post-review-loop iteration accepted; checkpoint evaluation is queued before pause" : "Post-review-loop phase accepted; checkpoint evaluation is queued",
+							status: "Continuing",
+							logMessage: "Post-review-loop phase accepted; next phase prompt queued",
 						},
 					}),
 					false,
@@ -866,13 +978,14 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 	pi.on("session_start", (event, ctx) => {
 		agentActive = false;
 		pendingMarkdownMessages.splice(0);
-		compactor.clear(pi);
+		pendingPhasePrompt = null;
+		clearScheduledPhasePrompt();
 		runtime.restore(latestStateFromSession(ctx));
 		const state = runtime.state;
 		if (state?.lifecycle === "checkpointing") {
-			runtime.markCheckpointFailed("Session restored while checkpointing; checkpoint was not completed.");
+			runtime.pauseWithError("Session restored from a legacy checkpointing state; checkpoint was not completed.");
 			persist(pi, ctx, "checkpoint-restored-paused");
-			notify(ctx, "Post-review-loop restored from checkpointing state and paused. Use /post-review-loop resume.", "warning");
+			notify(ctx, "Post-review-loop restored from a legacy checkpointing state and paused. Use /post-review-loop resume.", "warning");
 			return;
 		}
 		if (state?.lifecycle === "active" && event.reason === "reload") {
@@ -886,14 +999,10 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_tree", (_event, ctx) => {
-		compactor.clear(pi);
+		pendingPhasePrompt = null;
+		clearScheduledPhasePrompt();
 		runtime.restore(latestStateFromSession(ctx));
 		updateStatus(ctx);
-	});
-
-	pi.on("tool_call", (event) => {
-		const reason = compactor.blockReason(event.toolName);
-		return reason ? { block: true, reason } : undefined;
 	});
 
 	pi.on("agent_start", () => {
@@ -902,29 +1011,14 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 
 	pi.on("agent_end", (_event, ctx) => {
 		agentActive = false;
-		compactor.runAfterAgent(
-			pi,
-			ctx,
-			{
-				markReady: () => {
-					const ready = runtime.markCheckpointReady();
-					if (ready.lifecycle === "complete" || ready.phase === "final-report") {
-						const report = completeWithReport(pi, ctx, "stopped");
-						showMarkdownMessage(pi, ctx, "Post-review-loop final report", report);
-						return runtime.state ?? ready;
-					}
-					return ready;
-				},
-				markFailed: (error) => runtime.markCheckpointFailed(error),
-			},
-			(event) => persist(pi, ctx, event),
-		);
+		flushQueuedPhasePromptAfterAgent(pi, ctx);
 		flushQueuedMarkdownMessagesAfterAgent(pi, ctx);
 	});
 
 	pi.on("session_shutdown", () => {
 		agentActive = false;
 		pendingMarkdownMessages.splice(0);
-		compactor.clear(pi);
+		pendingPhasePrompt = null;
+		clearScheduledPhasePrompt();
 	});
 }
