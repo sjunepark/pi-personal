@@ -43,6 +43,7 @@ type SubagentTaskConfig = {
 type SubagentResult = {
 	index: number;
 	task: string;
+	prompt: string;
 	exitCode: number;
 	messages: Message[];
 	stderr: string;
@@ -242,6 +243,7 @@ function createPendingResult(index: number, config: ReturnType<typeof mergeConfi
 	return {
 		index,
 		task: config.task,
+		prompt: buildPrompt({ task: config.task, contextText: config.contextText }),
 		exitCode: -1,
 		messages: [],
 		stderr: "",
@@ -295,9 +297,11 @@ async function runSubagent(
 ): Promise<SubagentResult> {
 	const startedAt = Date.now();
 	const modelArg = config.model;
+	const prompt = buildPrompt({ task: config.task, contextText: config.contextText });
 	const result: SubagentResult = {
 		index,
 		task: config.task,
+		prompt,
 		exitCode: -1,
 		messages: [],
 		stderr: "",
@@ -326,7 +330,7 @@ async function runSubagent(
 			args.push("--no-session");
 		}
 
-		args.push(buildPrompt({ task: config.task, contextText: config.contextText }));
+		args.push(prompt);
 
 		let wasAborted = false;
 		const exitCode = await new Promise<number>((resolve) => {
@@ -561,19 +565,28 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			);
 		},
 
-		renderResult(result, _options, theme) {
+		renderResult(result, { expanded }, theme) {
 			const details = result.details as SubagentDetails | undefined;
 			if (!details?.results?.length) {
 				const content = result.content[0];
 				return new Text(content?.type === "text" ? content.text : "(no output)", 0, 0);
 			}
-			const lines = details.results.map((item) => {
+			const lines = details.results.flatMap((item) => {
 				const status = subagentStatus(item);
 				const mark = status === "running" ? theme.fg("warning", "…") : status === "failed" ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const usage = formatUsage(item.usage);
 				const meta = [`thinking ${item.thinking}`, item.model, usage].filter(Boolean).join(" · ");
-				return `${mark} subagent ${item.index + 1}${meta ? theme.fg("dim", ` · ${meta}`) : ""}`;
+				const header = `${mark} subagent ${item.index + 1}${meta ? theme.fg("dim", ` · ${meta}`) : ""}`;
+				if (!expanded) return [header];
+
+				const prompt = item.prompt || item.task;
+				return [
+					header,
+					theme.fg("muted", "─── Prompt ───"),
+					theme.fg("dim", prompt),
+				];
 			});
+			if (!expanded) lines.push(theme.fg("muted", "(Ctrl+O to expand prompts)"));
 			return new Text(lines.join("\n"), 0, 0);
 		},
 	});
