@@ -92,6 +92,7 @@ Continue the user's task using the current context. Do not retry compaction imme
 }
 
 export class AgentCompactionController {
+	#registered = false;
 	#registeredFor = new WeakSet<ExtensionAPI>();
 	#state: CompactionState = { status: "idle" };
 	#scheduledMessage: ReturnType<typeof setTimeout> | null = null;
@@ -113,75 +114,84 @@ export class AgentCompactionController {
 	}
 
 	register(pi: ExtensionAPI): void {
-		if (this.#registeredFor.has(pi)) return;
+		if (this.#registered || this.#registeredFor.has(pi)) return;
+		this.#registered = true;
 		this.#registeredFor.add(pi);
 
-		pi.registerTool({
-			name: "compact_conversation",
-			label: "Compact Conversation",
-			description: "Replace previous conversation context with an agent-authored high-fidelity compacted working context.",
-			promptSnippet: "Replace previous conversation context with a high-fidelity compacted working context when context usage is high.",
-			promptGuidelines: [
-				"Use compact_conversation only after a context-compaction checkpoint or workflow kickoff asks you to compact or decide whether compaction is worthwhile.",
-				"The compact_conversation summary should be a dense working context for an LLM, not a short human summary; include relevant file contents and exact details needed to avoid unnecessary rereads.",
-				"Do not overuse compact_conversation. If the current context is still useful and not noisy, continue without compacting.",
-			],
-			parameters: Type.Object({
-				summary: Type.String({
-					minLength: 1,
-					description:
-						"High-fidelity compacted working context that will replace previous conversation history. It may be long and should preserve exact task state, decisions, file contents/snippets, validation, and next steps needed to continue.",
+		try {
+			pi.registerTool({
+				name: "compact_conversation",
+				label: "Compact Conversation",
+				description: "Replace previous conversation context with an agent-authored high-fidelity compacted working context.",
+				promptSnippet: "Replace previous conversation context with a high-fidelity compacted working context when context usage is high.",
+				promptGuidelines: [
+					"Use compact_conversation only after a context-compaction checkpoint or workflow kickoff asks you to compact or decide whether compaction is worthwhile.",
+					"The compact_conversation summary should be a dense working context for an LLM, not a short human summary; include relevant file contents and exact details needed to avoid unnecessary rereads.",
+					"Do not overuse compact_conversation. If the current context is still useful and not noisy, continue without compacting.",
+				],
+				parameters: Type.Object({
+					summary: Type.String({
+						minLength: 1,
+						description:
+							"High-fidelity compacted working context that will replace previous conversation history. It may be long and should preserve exact task state, decisions, file contents/snippets, validation, and next steps needed to continue.",
+					}),
 				}),
-			}),
-			executionMode: "sequential",
-			async execute(_toolCallId, params: { summary: string }, _signal, _onUpdate, ctx) {
-				return agentCompaction.acceptCompaction(pi, ctx, params.summary);
-			},
-		});
-
-		pi.on("session_start", () => {
-			this.clear();
-		});
-
-		pi.on("session_tree", () => {
-			this.clear();
-		});
-
-		pi.on("session_before_compact", (event) => {
-			const compaction = this.#currentCompaction();
-			if (!compaction) return;
-			return {
-				compaction: {
-					summary: compaction.summary,
-					firstKeptEntryId: `${FULL_REPLACEMENT_SENTINEL}:${compaction.requestId}`,
-					tokensBefore: event.preparation.tokensBefore,
-					details: {
-						source: COMPACTION_DETAILS_SOURCE,
-						requestId: compaction.requestId,
-						summaryChars: compaction.summary.length,
-						fullReplacement: true,
-						requestSource: compaction.request?.source,
-						physicalCompaction: compaction.physicalCompaction,
-					},
+				executionMode: "sequential",
+				async execute(_toolCallId, params: { summary: string }, _signal, _onUpdate, ctx) {
+					return agentCompaction.acceptCompaction(pi, ctx, params.summary);
 				},
-			};
-		});
+			});
 
-		pi.on("session_compact", (event, ctx) => {
-			const compaction = this.#currentCompaction();
-			if (!compaction) return;
-			const details = event.compactionEntry.details as { requestId?: string; source?: string } | undefined;
-			if (details?.source !== COMPACTION_DETAILS_SOURCE || details.requestId !== compaction.requestId) return;
-			this.complete(pi, ctx, event.compactionEntry.tokensBefore);
-		});
+			pi.on("session_start", () => {
+				this.clear();
+			});
 
-		pi.on("agent_end", (_event, ctx) => {
-			this.runAfterAgent(pi, ctx);
-		});
+			pi.on("session_tree", () => {
+				this.clear();
+			});
 
-		pi.on("session_shutdown", () => {
-			this.clear();
-		});
+			pi.on("session_before_compact", (event) => {
+				const compaction = this.#currentCompaction();
+				if (!compaction) return;
+				return {
+					compaction: {
+						summary: compaction.summary,
+						firstKeptEntryId: `${FULL_REPLACEMENT_SENTINEL}:${compaction.requestId}`,
+						tokensBefore: event.preparation.tokensBefore,
+						details: {
+							source: COMPACTION_DETAILS_SOURCE,
+							requestId: compaction.requestId,
+							summaryChars: compaction.summary.length,
+							fullReplacement: true,
+							requestSource: compaction.request?.source,
+							physicalCompaction: compaction.physicalCompaction,
+						},
+					},
+				};
+			});
+
+			pi.on("session_compact", (event, ctx) => {
+				const compaction = this.#currentCompaction();
+				if (!compaction) return;
+				const details = event.compactionEntry.details as { requestId?: string; source?: string } | undefined;
+				if (details?.source !== COMPACTION_DETAILS_SOURCE || details.requestId !== compaction.requestId) return;
+				this.complete(pi, ctx, event.compactionEntry.tokensBefore);
+			});
+
+			pi.on("agent_end", (_event, ctx) => {
+				this.runAfterAgent(pi, ctx);
+			});
+
+			pi.on("session_shutdown", () => {
+				this.clear();
+				this.#registered = false;
+				this.#registeredFor = new WeakSet<ExtensionAPI>();
+			});
+		} catch (error) {
+			this.#registered = false;
+			this.#registeredFor.delete(pi);
+			throw error;
+		}
 	}
 
 	request(pi: ExtensionAPI, ctx: ExtensionContext, request: AgentCompactionRequest): boolean {
@@ -370,4 +380,15 @@ export class AgentCompactionController {
 	}
 }
 
-export const agentCompaction = new AgentCompactionController();
+// Pi can load package extension entrypoints through isolated module loaders, so share the
+// controller through globalThis to keep compact_conversation registered exactly once.
+const AGENT_COMPACTION_GLOBAL_KEY = "__sjuneparkPiPersonalAgentCompaction" as const;
+const globalAgentCompaction = globalThis as typeof globalThis & {
+	[AGENT_COMPACTION_GLOBAL_KEY]?: AgentCompactionController;
+};
+
+export const agentCompaction = (globalAgentCompaction[AGENT_COMPACTION_GLOBAL_KEY] ??= new AgentCompactionController());
+
+export default function agentCompactionExtension(pi: ExtensionAPI): void {
+	agentCompaction.register(pi);
+}
