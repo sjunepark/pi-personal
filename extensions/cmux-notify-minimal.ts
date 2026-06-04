@@ -31,6 +31,12 @@ type RunState = {
 	continuationLogMessage?: string;
 };
 
+type CustomLike = {
+	role?: string;
+	customType?: string;
+	content?: unknown;
+};
+
 type AssistantLike = {
 	role?: string;
 	stopReason?: string;
@@ -163,6 +169,30 @@ function getNotifyControl(details: unknown): NotifyControlDetails["notify"] | un
 	return notify && typeof notify === "object" ? notify : undefined;
 }
 
+function hasUserVisibleWork(state: RunState): boolean {
+	return state.readFiles.size > 0 || state.changedFiles.size > 0 || state.searchCount > 0 || state.bashCount > 0;
+}
+
+function getTextContent(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type?: string; text: string } => typeof part?.text === "string")
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function isContextCompactionControlMessage(message: unknown): boolean {
+	const candidate = message as CustomLike;
+	if (candidate?.role !== "custom" || candidate.customType !== "context-compaction-guard") return false;
+	const text = getTextContent(candidate.content);
+	return text.includes("Agent-driven context compaction") || text.includes("Context compaction checkpoint");
+}
+
+function isCompactionControlRun(messages: readonly unknown[]): boolean {
+	return messages.some(isContextCompactionControlMessage);
+}
+
 function summarizeRunOutcome(messages: readonly unknown[]): { kind: "error" | "aborted"; message: string } | undefined {
 	const assistant = getLastAssistantMessage(messages);
 	if (!assistant) return undefined;
@@ -280,6 +310,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", async (event) => {
+		if (event.toolName === "compact_conversation") {
+			runState.suppressCompletionNotify = true;
+			runState.continuationStatus = "Compacting";
+			runState.continuationLogMessage = "Context compaction queued";
+		}
+
 		const notifyControl = getNotifyControl(event.details);
 		if (notifyControl?.suppressCompletion === true) {
 			runState.suppressCompletionNotify = true;
@@ -340,6 +376,18 @@ export default function (pi: ExtensionAPI) {
 				priority: STATUS_PRIORITY_IDLE,
 			}, true);
 			await log("progress", runState.continuationLogMessage || "Run completed; continuation is queued");
+			return;
+		}
+
+		if (!hasUserVisibleWork(runState) && isCompactionControlRun(event.messages)) {
+			currentStatusPriority = STATUS_PRIORITY_IDLE;
+			await applyStatus({
+				value: "Continuing",
+				color: "#4C8DFF",
+				icon: "arrow.triangle.2.circlepath",
+				priority: STATUS_PRIORITY_IDLE,
+			}, true);
+			await log("progress", "Context compaction completed; continuation is queued");
 			return;
 		}
 
