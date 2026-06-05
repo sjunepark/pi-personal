@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { agentCompaction } from "./agent-compaction.js";
+import { buildThresholdCompactionAdvisory, formatContextUsage } from "./shared/agent-compaction-prompts.js";
 
 type ContextUsage = ReturnType<ExtensionContext["getContextUsage"]>;
 
@@ -19,13 +20,6 @@ const THRESHOLDS = [40, 50, 60, 70] as const;
 const URGENT_THRESHOLD = 70;
 
 let alertedThresholds = new Set<number>();
-
-function formatUsage(usage: ContextUsage): string {
-	if (!usage) return "context usage unavailable";
-	const percent = usage.percent === null ? "unknown" : `${usage.percent.toFixed(1)}%`;
-	const tokens = usage.tokens === null ? "unknown tokens" : `${usage.tokens.toLocaleString()} tokens`;
-	return `${percent} (${tokens} / ${usage.contextWindow.toLocaleString()})`;
-}
 
 function customMessage(content: string, details?: unknown): any {
 	return {
@@ -67,40 +61,6 @@ function markThresholdsThrough(threshold: number): void {
 	}
 }
 
-function buildThresholdAdvisory(threshold: number, usage: ContextUsage): string {
-	const urgent = threshold >= URGENT_THRESHOLD;
-	return `Context compaction checkpoint: current context usage crossed ${threshold}% (${formatUsage(usage)}).
-
-This is an agent-facing context-engineering checkpoint, not a request for the human user. Decide automatically whether to compact before continuing.
-
-Why this option exists:
-- Agents often lose focus as context grows; degradation is commonly noticeable around or after ~70% usage.
-- Good context engineering keeps the smallest high-signal working context, not every historical token.
-- Even before 70%, replacing low-value history with a dense working context can improve long-run output quality.
-- Compaction should not be overused: weak compaction can cause repeated reads of files already inspected, wasting time and filling context again.
-
-${urgent ? "Urgency: HIGH. Strongly consider compacting now unless the task is about to finish or you cannot produce a high-fidelity compacted context yet." : "Urgency: moderate. Compact only if you can preserve the details needed to continue without avoidable rereads."}
-
-If you choose to compact, call compact_conversation with a high-fidelity compacted working context. The summary may be long. It is for an LLM, not for a human skim.
-
-A good compacted context should include:
-## Current task
-## User constraints and preferences
-## Current state / progress
-## Key decisions and rationale
-## Files and code already inspected
-- Include exact paths.
-- For important files, include the relevant content, snippets, APIs, invariants, and conclusions.
-- For small central files, include full content when that prevents rereading.
-- Do not merely list paths if the file contents are likely needed after compaction.
-## Files modified / pending edits
-## Commands and validation results
-## Errors, blockers, and open questions
-## Next actions
-
-If you choose not to compact, silently continue the user's task. Do not ask the human for confirmation.`;
-}
-
 export default function contextCompactionGuard(pi: ExtensionAPI): void {
 	agentCompaction.register(pi);
 
@@ -129,7 +89,17 @@ export default function contextCompactionGuard(pi: ExtensionAPI): void {
 		});
 
 		return {
-			messages: [...event.messages, customMessage(buildThresholdAdvisory(threshold, usage), { threshold, usage })],
+			messages: [
+				...event.messages,
+				customMessage(
+					buildThresholdCompactionAdvisory({
+						threshold,
+						usageLabel: formatContextUsage(usage),
+						urgent: threshold >= URGENT_THRESHOLD,
+					}),
+					{ threshold, usage },
+				),
+			],
 		};
 	});
 }

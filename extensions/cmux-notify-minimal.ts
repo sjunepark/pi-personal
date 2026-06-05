@@ -34,7 +34,6 @@ type RunState = {
 type CustomLike = {
 	role?: string;
 	customType?: string;
-	content?: unknown;
 };
 
 type AssistantLike = {
@@ -173,20 +172,9 @@ function hasUserVisibleWork(state: RunState): boolean {
 	return state.readFiles.size > 0 || state.changedFiles.size > 0 || state.searchCount > 0 || state.bashCount > 0;
 }
 
-function getTextContent(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((part): part is { type?: string; text: string } => typeof part?.text === "string")
-		.map((part) => part.text)
-		.join("\n");
-}
-
 function isContextCompactionControlMessage(message: unknown): boolean {
 	const candidate = message as CustomLike;
-	if (candidate?.role !== "custom" || candidate.customType !== "context-compaction-guard") return false;
-	const text = getTextContent(candidate.content);
-	return text.includes("Agent-driven context compaction") || text.includes("Context compaction checkpoint");
+	return candidate?.role === "custom" && candidate.customType === "context-compaction-guard";
 }
 
 function isCompactionControlRun(messages: readonly unknown[]): boolean {

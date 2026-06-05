@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { agentCompaction } from "../agent-compaction.js";
+import { agentCompactionSummaryChecklist } from "../shared/agent-compaction-prompts.js";
 import { computeWorktreeFingerprint, createAfterReviewCommit, establishBaseline, failedAfterReviewCommit, needsAgentSelectedAfterReviewCommit } from "./git.js";
 import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
 import { finalCommitPrompt, oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
@@ -637,17 +638,16 @@ Why this is required:
 - Starting with an agent-authored summary avoids relying on pi's generic compaction summary for workflow state.
 
 Your compact_conversation summary should preserve:
-## Current task
-- User requested /post-review-loop ${kind}.
-- Scope: ${compactStatusText(scope, 1200)}
-- After compaction: ${nextAction}
-## User constraints and preferences
-## Current repository/session state needed to continue
-## Files and code already inspected, with relevant snippets when needed
-## Files modified / pending edits
-## Commands and validation results
-## Errors, blockers, and open questions
-## Next actions
+${agentCompactionSummaryChecklist([
+	`## Current task\n- User requested /post-review-loop ${kind}.\n- Scope: ${compactStatusText(scope, 1200)}\n- After compaction: ${nextAction}`,
+	"## User constraints and preferences",
+	"## Current repository/session state needed to continue",
+	"## Files and code already inspected, with relevant snippets when needed",
+	"## Files modified / pending edits",
+	"## Commands and validation results",
+	"## Errors, blockers, and open questions",
+	"## Next actions",
+])}
 
 Do not inspect new files or start the review before compacting. If compaction fails, do not continue implicitly; the extension will pause instead.`;
 }
