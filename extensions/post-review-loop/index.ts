@@ -447,16 +447,25 @@ function commandTokens(args: string): string[] {
 	return args.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((token) => token.replace(/^"|"$/g, "")) ?? [];
 }
 
-function parseStartArgs(args: string): { scope: string; limit?: number; reviewOnly: boolean; gitCheckpoint: boolean } {
+function parseStartArgs(args: string): { scope: string; limit?: number; reviewOnly: boolean; gitCheckpoint: boolean; compact: boolean } {
 	const tokens = commandTokens(args);
 	let limit: number | undefined;
 	let reviewOnly = false;
 	let gitCheckpoint = true;
+	let compact = false;
 	const scopeParts: string[] = [];
 	for (let index = 0; index < tokens.length; index += 1) {
 		const token = tokens[index];
 		if (token === "--review-only") {
 			reviewOnly = true;
+			continue;
+		}
+		if (token === "--compact") {
+			compact = true;
+			continue;
+		}
+		if (token === "--no-compact") {
+			compact = false;
 			continue;
 		}
 		if (token === "--no-git-checkpoint") {
@@ -480,7 +489,7 @@ function parseStartArgs(args: string): { scope: string; limit?: number; reviewOn
 		}
 		scopeParts.push(token);
 	}
-	return { scope: scopeParts.join(" ").trim(), limit, reviewOnly, gitCheckpoint };
+	return { scope: scopeParts.join(" ").trim(), limit, reviewOnly, gitCheckpoint, compact };
 }
 
 function parseOneshotArgs(args: string): { scope: string; reviewOnly: boolean } {
@@ -691,6 +700,8 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				"oneshot",
 				"oneshot --review-only",
 				"start",
+				"start --compact",
+				"start --compact --limit 3",
 				"start --limit 3",
 				"start --review-only",
 				"start --no-git-checkpoint",
@@ -795,8 +806,13 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 				const parsed = parseStartArgs(restText);
 				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
 				const state = startLoop(pi, ctx, scope, { limit: parsed.limit, reviewOnly: parsed.reviewOnly, gitCheckpoint: parsed.gitCheckpoint });
-				notify(ctx, `Post-review-loop started: ${compactText(state.scope)}; initial compaction required before the first phase.`, "info");
-				requestInitialLoopCompaction(pi, ctx, state);
+				if (parsed.compact) {
+					notify(ctx, `Post-review-loop started: ${compactText(state.scope)}; initial compaction required before the first phase.`, "info");
+					requestInitialLoopCompaction(pi, ctx, state);
+					return;
+				}
+				notify(ctx, `Post-review-loop started: ${compactText(state.scope)}; first phase prompt queued.`, "info");
+				sendPhasePrompt(pi, ctx, state);
 				return;
 			}
 
