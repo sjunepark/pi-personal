@@ -267,6 +267,8 @@ function coreRules(state: LoopState): string {
 - Prefer strong, root-cause findings and integrated fixes; reject speculative polish, wrappers, and broad future-proofing.
 - Batch related Bucket I work that shares files, modules, or state domains; hidden prompt-batch items remain active unless you inspect full status/report.
 - Submit only new/materially changed Bucket II items; reuse existing titles for updates.
+- If delegating review to a subagent, do not downshift to a mini/cheap model for correctness or design review; use the active high-reasoning review model, or the user's explicitly requested review model/thinking such as gpt-5.5 with high thinking.
+- Keep delegated reviewer context fresh but not context-starved: pass the scope, phase, relevant prior findings/concerns, expected output shape, and validation expectations, then have the reviewer inspect real files/diffs itself.
 - End by calling post_review_loop_submit_phase_result; do not freehand the final report.`;
 	}
 	return `Rules:
@@ -285,6 +287,8 @@ function coreRules(state: LoopState): string {
 - Batch closely related Bucket I work that shares files, modules, or state domains; do not stop after only the first related item when the rest can be safely verified or fixed together.
 - If the compact ledger says active items are queued outside this prompt batch, work only on the shown relevant batch unless you explicitly inspect full status/report; hidden items remain active in the persisted ledger and must not be marked resolved by omission.
 - Submit only new/materially changed Bucket II items; reuse an existing title verbatim to update it.
+- If delegating review to a subagent, do not downshift to a mini/cheap model for correctness or design review; use the active high-reasoning review model, or the user's explicitly requested review model/thinking such as gpt-5.5 with high thinking.
+- Keep delegated reviewer context fresh but not context-starved: pass the scope, phase, relevant prior findings/concerns, expected output shape, and validation expectations, then have the reviewer inspect real files/diffs itself.
 - For the first post-review phase, submit reviewTargetBriefing: one or two approachable paragraphs explaining the review target itself, not loop activity.
 - End the phase by calling post_review_loop_submit_phase_result. Do not freehand the final report.`;
 }
@@ -419,6 +423,8 @@ Review scale / tunnel-vision control:
 - For small or obvious changes, review directly and do a deliberate second pass if needed.
 - For moderate non-trivial changes, use at most one fresh-context reviewer when independence is likely to catch issues this review may miss.
 - For broad, risky, design-heavy, security-sensitive, or multi-surface changes, use multiple focused reviewers only when distinct risk angles need separate attention.
+- For delegated correctness/design reviewers, do not choose a mini/cheap model merely for cost; use the active high-reasoning review model, or the user's explicitly requested review model/thinking such as gpt-5.5 with high thinking.
+- Keep reviewer sessions fresh but not context-starved: include the review scope, changed/diff targets, known concerns, expected output shape, and validation expectations; ask the reviewer to inspect files/diffs itself rather than relying only on the briefing.
 - Treat reviewer output as leads: verify every accepted finding yourself against the real code path, nearby interfaces, tests, docs, scope, and risk.
 
 Evidence reuse and batching:
