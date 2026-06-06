@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import {
 	FAST_MODE_STATE_ENTRY_TYPE,
 	getCurrentFastModeModel,
+	getDefaultFastModeEnabled,
 	getFastSupportForModel,
 	patchPayloadWithFastMode,
 	restoreFastModeState,
@@ -33,12 +34,11 @@ function persistState(pi: ExtensionAPI, enabled: boolean): void {
 }
 
 /**
- * New sessions start with fast mode off. If fast mode should ever become the
- * default again, use `getFastSupport(ctx).supported` instead of a simple `true`
+ * New sessions request fast mode by default only for models that support it,
  * so unsupported models do not request priority service.
  */
-function getDefaultEnabled(_ctx: ExtensionContext): boolean {
-	return false;
+function getDefaultEnabled(ctx: ExtensionContext): boolean {
+	return getDefaultFastModeEnabled(ctx);
 }
 
 function formatStatusMessage(ctx: ExtensionContext, enabled: boolean): string {

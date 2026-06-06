@@ -102,8 +102,12 @@ export function restoreFastModeState(ctx: ExtensionContext): FastModeState | und
 	};
 }
 
+export function getDefaultFastModeEnabled(ctx: ExtensionContext): boolean {
+	return getFastSupportForModel(getCurrentFastModeModel(ctx)).supported;
+}
+
 export function isFastModeRequested(ctx: ExtensionContext): boolean {
-	return restoreFastModeState(ctx)?.enabled === true;
+	return restoreFastModeState(ctx)?.enabled ?? getDefaultFastModeEnabled(ctx);
 }
 
 export function patchPayloadWithFastMode(payload: unknown): unknown {
