@@ -10,6 +10,7 @@ Use this as the working progress tracker. Read it first, then continue with the 
 - Update the same file as you work so it reflects completed steps, current status, blockers, and next steps.
 - Prefer small, safe, validated changes over broad rewrites.
 - If the plan target is unclear, or a step needs a product/design decision, ask before continuing.
+- When missing context or requirements block progress, discuss the specific information needed to proceed with the plan and ask focused questions to obtain it.
 - Run the relevant existing validation when practical and record important results in the plan file.
 - Stop when the plan is complete, blocked, or you need a decision.
 
