@@ -493,18 +493,27 @@ function parseStartArgs(args: string): { scope: string; limit?: number; reviewOn
 	return { scope: scopeParts.join(" ").trim(), limit, reviewOnly, gitCheckpoint, compact };
 }
 
-function parseOneshotArgs(args: string): { scope: string; reviewOnly: boolean } {
+function parseOneshotArgs(args: string): { scope: string; reviewOnly: boolean; compact: boolean } {
 	const tokens = commandTokens(args);
 	let reviewOnly = false;
+	let compact = false;
 	const scopeParts: string[] = [];
 	for (const token of tokens) {
 		if (token === "--review-only") {
 			reviewOnly = true;
 			continue;
 		}
+		if (token === "--compact") {
+			compact = true;
+			continue;
+		}
+		if (token === "--no-compact") {
+			compact = false;
+			continue;
+		}
 		scopeParts.push(token);
 	}
-	return { scope: scopeParts.join(" ").trim(), reviewOnly };
+	return { scope: scopeParts.join(" ").trim(), reviewOnly, compact };
 }
 
 function renderReportOnly(options: { full?: boolean } = {}): string {
@@ -698,6 +707,8 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 		getArgumentCompletions(prefix) {
 			const options = [
 				"oneshot",
+				"oneshot --compact",
+				"oneshot --compact --review-only",
 				"oneshot --review-only",
 				"start",
 				"start --compact",
@@ -819,8 +830,13 @@ function registerCommand(pi: ExtensionAPI, name: string): void {
 			if (subcommand === "oneshot") {
 				const parsed = parseOneshotArgs(restText);
 				const scope = parsed.scope || DEFAULT_REVIEW_SCOPE;
-				notify(ctx, `Post-review-loop oneshot: ${compactText(scope)}; initial compaction required before review.`, "info");
-				requestInitialOneshotCompaction(pi, ctx, scope, parsed.reviewOnly);
+				if (parsed.compact) {
+					notify(ctx, `Post-review-loop oneshot: ${compactText(scope)}; initial compaction required before review.`, "info");
+					requestInitialOneshotCompaction(pi, ctx, scope, parsed.reviewOnly);
+					return;
+				}
+				notify(ctx, `Post-review-loop oneshot: ${compactText(scope)}; review prompt queued.`, "info");
+				pi.sendUserMessage(oneshotPrompt(scope, { reviewOnly: parsed.reviewOnly }), { deliverAs: "followUp" });
 				return;
 			}
 

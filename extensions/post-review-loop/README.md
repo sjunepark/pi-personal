@@ -5,7 +5,7 @@ Pi extension that owns the post-implementation review loop workflow.
 ## Commands
 
 ```text
-/post-review-loop oneshot [--review-only] [scope]
+/post-review-loop oneshot [--compact] [--review-only] [scope]
 /post-review-loop start [--compact] [--limit N] [--review-only] [--no-git-checkpoint] [scope]
 /post-review-loop status [--full]
 /post-review-loop pause
@@ -24,7 +24,7 @@ Pi extension that owns the post-implementation review loop workflow.
 
 The model supplies phase findings, validation, submitted phase-scope files, and code-change facts. The extension persists the ledger, gates phase transitions, can request one agent-facing compaction at workflow start, and renders concise default reports; use `--full` for audit detail.
 
-`/post-review-loop oneshot` is stateless. It still requires agent-facing startup compaction, then injects the copied Post-Implementation Review behavior as a one-turn review-and-improve prompt. It defaults to `uncommitted changes`, supports `--review-only`, and intentionally does not use the persistent loop ledger, phase tools, or final-report machinery.
+`/post-review-loop oneshot` is stateless. It injects the copied Post-Implementation Review behavior as a one-turn review-and-improve prompt. It defaults to `uncommitted changes`, supports `--compact` and `--review-only`, and intentionally does not use the persistent loop ledger, phase tools, or final-report machinery.
 
 ## Current v1 policies
 
@@ -47,8 +47,8 @@ The model supplies phase findings, validation, submitted phase-scope files, and 
 - Phase `summary` is a short human-friendly explanation of what code or behavior was reviewed/changed in that phase. It is not a file list or a findings list.
 - `reviewTargetBriefing` drives the report's `What Was Reviewed` section. It explains the review target itself, such as uncommitted changes, a named feature implementation, or a refactor, in one or two teaching-style paragraphs instead of listing review activity by phase.
 - `changedFiles` / `filesChanged` means files inspected, reviewed, or touched during submitted phases. `codeChanges` is the authoritative loop-edit ledger and drives “files edited by loop” wording in reports.
-- Startup compaction is agent-facing and opt-in for `start` via `--compact`; `oneshot` still requires it. The loop uses the shared `compact_conversation` implementation from the context-compaction guard logic, so the agent authors the high-fidelity handoff instead of relying on pi's generic compaction summary.
-- If requested startup compaction fails or the agent does not call `compact_conversation`, persistent loops pause before the first phase prompt. `oneshot` does not inject the review prompt; rerun it when ready.
+- Startup compaction is agent-facing and opt-in for `start` and `oneshot` via `--compact`. The loop uses the shared `compact_conversation` implementation from the context-compaction guard logic, so the agent authors the high-fidelity handoff instead of relying on pi's generic compaction summary.
+- If requested startup compaction fails or the agent does not call `compact_conversation`, persistent loops pause before the first phase prompt. Compacted `oneshot` runs do not inject the review prompt; rerun them when ready.
 - The loop does not compact after each phase or iteration. After a continuing phase result, it queues the next authoritative phase prompt directly after the agent turn ends. Ongoing context pressure during an iteration is handled by `context-compaction-guard` threshold checkpoints.
 - Compact phase prompts batch active Bucket I/Bucket II ledger items instead of dumping an unbounded list. Hidden overflow remains active in the persisted ledger and gate decisions count the merged current ledger, so omitted items are queued for later phases instead of being treated as resolved. After the first phase, prompts use shorter rules/schema reminders, omit empty sections, and show baseline files only when first-pass checkpointing context needs them.
 - Phase submissions record worktree fingerprints, per-file hashes for inspected files, and validation cache entries. Later prompts may cite still-current evidence or reused validation when hashes match, but changed files and uncertain command inputs still require fresh inspection/validation. Validation gating treats later results for the same command/input fingerprint as superseding earlier failures, so a rerun that passes does not leave the loop blocked by stale failed attempts. The reusable validation and phase-evidence caches are retention-limited; full validation history remains in the report ledger.
