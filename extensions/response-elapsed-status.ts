@@ -60,7 +60,9 @@ export default function responseElapsedStatus(pi: ExtensionAPI): void {
 		activeTimer = { startedAt, interval };
 	}
 
-	pi.on("input", async (_event, ctx) => {
+	pi.on("input", async (event, ctx) => {
+		if (event.source === "extension" && activeTimer) return;
+
 		pendingPromptStartedAt = Date.now();
 		if (activeTimer) {
 			startTimer(ctx, pendingPromptStartedAt);

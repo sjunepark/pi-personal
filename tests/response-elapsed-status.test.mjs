@@ -58,6 +58,26 @@ test("elapsed status resets when a new user input arrives mid-response", async (
 	}
 });
 
+test("elapsed status does not reset for queued extension follow-ups mid-response", async () => {
+	const harness = createHarness();
+	const { ctx, statuses } = createCtx();
+	const restoreNow = stubDateNow(0);
+
+	try {
+		await harness.emit("before_agent_start", {}, ctx);
+		restoreNow.set(10_000);
+		await harness.emit("input", { source: "extension", streamingBehavior: "followUp" }, ctx);
+		assert.deepEqual(statuses.at(-1), { key: "response-elapsed", text: "elapsed 00:00" });
+
+		restoreNow.set(12_000);
+		await harness.emit("agent_end", {}, ctx);
+		assert.deepEqual(statuses.at(-1), { key: "response-elapsed", text: "elapsed 00:12" });
+	} finally {
+		await harness.emit("session_shutdown", {}, ctx);
+		restoreNow();
+	}
+});
+
 function createHarness() {
 	const handlers = new Map();
 	responseElapsedStatus({
