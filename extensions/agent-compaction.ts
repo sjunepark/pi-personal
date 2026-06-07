@@ -12,10 +12,14 @@ type CompactionResult = {
 	source?: string;
 };
 
+type CompletionBehavior = "continue" | "announce-and-stop" | "silent-stop";
+
 type AgentCompactionRequest = {
 	source: string;
 	message: string;
 	details?: Record<string, unknown>;
+	/** Defaults to continuing the task for workflow-driven compactions. Manual compaction commands should stop. */
+	completionBehavior?: CompletionBehavior;
 	onComplete?: (pi: ExtensionAPI, ctx: ExtensionContext, result: CompactionResult) => void;
 	onError?: (pi: ExtensionAPI, ctx: ExtensionContext, error: Error, requestId: string) => void;
 };
@@ -83,6 +87,14 @@ function buildCompactionCompleteMessage(result: { summaryChars: number; tokensBe
 The previous conversation context was replaced with the high-fidelity compacted working context you submitted (${result.summaryChars.toLocaleString()} chars, replacing about ${result.tokensBefore.toLocaleString()} tokens before compaction).
 
 Continue the user's task from this compacted context. Avoid rereading files whose needed contents are already captured; reread only when the compacted context is insufficient, stale, or exact current file contents are required.`;
+}
+
+function buildCompactionStoppedMessage(result: { summaryChars: number; tokensBefore: number }): string {
+	return `Agent-driven context compaction completed.
+
+The previous conversation context was replaced with the high-fidelity compacted working context you submitted (${result.summaryChars.toLocaleString()} chars, replacing about ${result.tokensBefore.toLocaleString()} tokens before compaction).
+
+Stop here. Wait for the human user's next message before continuing work.`;
 }
 
 function buildCompactionFailedMessage(error: Error): string {
@@ -216,6 +228,7 @@ export class AgentCompactionController {
 		if (!summary) throw new Error("summary must not be empty");
 
 		const request = this.#requestFor(this.#state);
+		const completionBehavior = request?.completionBehavior ?? "continue";
 		const compaction: AcceptedCompaction = {
 			requestId: request?.requestId ?? newRequestId(),
 			summary,
@@ -228,12 +241,15 @@ export class AgentCompactionController {
 
 		notify(ctx, "Agent-driven context compaction queued", "info");
 		return textToolResult(
-			"Compaction accepted and queued. Stop this turn now; the extension will replace previous context with your compacted working context and then continue automatically.",
+			completionBehavior === "continue"
+				? "Compaction accepted and queued. Stop this turn now; the extension will replace previous context with your compacted working context and then continue automatically."
+				: "Compaction accepted and queued. Stop this turn now; the extension will replace previous context with your compacted working context and wait for the human user's next message.",
 			{
 				requestId: compaction.requestId,
 				summaryChars: summary.length,
 				usage: compaction.usage,
 				requestSource: request?.source,
+				completionBehavior,
 				physicalCompaction: compaction.physicalCompaction,
 			},
 			true,
@@ -295,7 +311,14 @@ export class AgentCompactionController {
 		this.#scheduledMessage = null;
 	}
 
-	#sendCustomMessageWhenIdle(pi: ExtensionAPI, ctx: ExtensionContext, content: string, details?: unknown, onSend?: () => void): void {
+	#sendCustomMessageWhenIdle(
+		pi: ExtensionAPI,
+		ctx: ExtensionContext,
+		content: string,
+		details?: unknown,
+		onSend?: () => void,
+		options: { triggerTurn?: boolean } = { triggerTurn: true },
+	): void {
 		this.clearScheduledMessage();
 		const version = this.#scheduleVersion;
 		const poll = () => {
@@ -306,7 +329,7 @@ export class AgentCompactionController {
 			}
 			this.#scheduledMessage = null;
 			onSend?.();
-			pi.sendMessage(customMessage(content, details), { deliverAs: "followUp", triggerTurn: true });
+			pi.sendMessage(customMessage(content, details), { deliverAs: "followUp", triggerTurn: options.triggerTurn });
 		};
 		this.#scheduledMessage = setTimeout(poll, 25);
 	}
@@ -330,7 +353,17 @@ export class AgentCompactionController {
 			request.onComplete(pi, ctx, result);
 			return;
 		}
-		this.#sendCustomMessageWhenIdle(pi, ctx, buildCompactionCompleteMessage(result), { result });
+		const completionBehavior = request?.completionBehavior ?? "continue";
+		if (completionBehavior === "silent-stop") return;
+		const shouldContinue = completionBehavior === "continue";
+		this.#sendCustomMessageWhenIdle(
+			pi,
+			ctx,
+			shouldContinue ? buildCompactionCompleteMessage(result) : buildCompactionStoppedMessage(result),
+			{ result },
+			undefined,
+			{ triggerTurn: shouldContinue },
+		);
 	}
 
 	fail(pi: ExtensionAPI, ctx: ExtensionContext, error: Error): void {

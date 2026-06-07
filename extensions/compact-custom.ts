@@ -22,6 +22,7 @@ export default function compactCustom(pi: ExtensionAPI): void {
 				source: "compact-custom",
 				message: buildManualCompactionRequestMessage({ usage, customInstructions }),
 				details: { customInstructions, usage },
+				completionBehavior: "announce-and-stop",
 			});
 
 			if (!ok && ctx.hasUI) {

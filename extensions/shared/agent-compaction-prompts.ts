@@ -97,7 +97,7 @@ export function buildManualCompactionRequestMessage(options: {
 			"This compaction should reduce context while avoiding unnecessary rereads after the replacement.",
 		],
 		customInstructions: options.customInstructions,
-		afterCompaction: "continue the user's task from the compacted working context if there is clear remaining work; otherwise report that compaction completed.",
+		afterCompaction: "stop. Do not continue the user's task, run tools, or report further until the human sends another message.",
 		failureInstruction: "Do not inspect new files or start unrelated work before compacting. If you cannot produce a high-fidelity summary, explain the blocker instead of calling compact_conversation with a weak summary.",
 	});
 }

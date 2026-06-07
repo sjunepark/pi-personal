@@ -16,6 +16,8 @@ test("manual compaction prompt carries user focus and requires compact_conversat
 	assert.match(message, /51\.2% \(12,345 tokens \/ 200,000\)/);
 	assert.match(message, /Before continuing, call compact_conversation/);
 	assert.match(message, /preserve exact validation output/);
+	assert.match(message, /After compaction: stop/);
+	assert.match(message, /Do not continue the user's task/);
 	assert.match(message, /## Files and code already inspected/);
 });
 
