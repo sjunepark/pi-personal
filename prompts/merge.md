@@ -1,17 +1,17 @@
 ---
 description: Carefully integrate another branch without blind git merge behavior
-argument-hint: "<branch> [dry]"
+argument-hint: "<branch> [dry] [instructions...]"
 ---
 
 Carefully integrate source branch `$1` into the current destination branch.
 
-Invoke as `/merge <branch> [dry]`. Treat `$1` as the source branch and `${@:2}` as optional flags. If `$1` is missing or starts with `-`, stop and ask for the source branch before inspecting or merging.
+Invoke as `/merge <branch> [dry] [instructions...]`. Treat `$1` as the source branch and `${@:2}` as optional flags and user instructions. If `$1` is missing or starts with `-`, stop and ask for the source branch before inspecting or merging.
 
-Requested flags: `${@:2}`. Accept `dry` as a planning-only mode.
+Requested options and instructions: `${@:2}`. Accept `dry` anywhere in `${@:2}` as a planning-only mode. Treat any remaining text as additional user instructions for this integration, subordinate to the conservative safety rules in this prompt.
 
 Operate in strict conservative mode. Do not blindly run and commit `git merge $1`, do not accept append-style or conflict-marker-driven results, and do not infer user intent from incomplete evidence.
 
-If `dry` is present in the requested flags, analyze the merge without changing repository state:
+If `dry` is present in the requested options and instructions, analyze the merge without changing repository state:
 
 - Do not run `git merge`, edit files, stage changes, commit, or otherwise mutate the working tree.
 - Use read-only git inspection commands to compare destination `HEAD`, source `$1`, and their merge-base.
@@ -78,4 +78,4 @@ Instead:
    - in dry mode, recommended next steps and the exact user decision needed before starting the merge
 
 Source branch to integrate: `$1`
-Requested flags: `${@:2}`
+Requested options and instructions: `${@:2}`
