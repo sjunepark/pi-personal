@@ -11,10 +11,11 @@ This prompt is for ending a long discussion and preparing a fresh implementation
 
 Use the current conversation as the primary source of truth. If additional command text is present above, treat it as the user's latest explicit instruction for the handoff. If it is empty, proceed from the current conversation alone. Inspect the repository only as needed to make paths, commands, and constraints concrete.
 
-1. Infer the target root-level plan file name.
+1. Infer the target plan file path.
+   - First inspect the repository for an existing plan-file convention. Check for directories such as `plans/`, `docs/plans/`, `.pi/plans/`, or existing files matching `PLAN*.md`, and prefer the convention already used by the repository.
+   - If no convention exists, create `PLAN-<UPPERCASE-SLUG>.md` in the repository root, for example `PLAN-CLI.md` or `PLAN-POST-REVIEW-LOOP.md`.
    - Choose a short, specific topic slug from the task or feature discussed.
    - Prefer concrete product/code nouns over vague words like `TASK`, `UPDATE`, or `CHANGES`.
-   - Create `PLAN-<UPPERCASE-SLUG>.md` in the repository root, for example `PLAN-CLI.md` or `PLAN-POST-REVIEW-LOOP.md`.
    - If the topic is genuinely ambiguous, ask for a short slug before writing.
    - If the inferred file already exists, read it and ask before overwriting, merging, or substantially rewriting it.
 
@@ -85,7 +86,7 @@ Use this section during `/progress-run` to record completed work, blockers, vali
 ## Next command
 
 ```text
-/progress-run <this-plan-file>
+/progress-run <this-plan-file-path>
 ```
 ~~~
 
