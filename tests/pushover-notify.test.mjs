@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pushoverNotify from "../extensions/pushover-notify.ts";
 
-function assistantMessage() {
+function assistantMessage(text = "Done") {
 	return {
 		role: "assistant",
-		content: [{ type: "text", text: "Done" }],
+		content: [{ type: "text", text }],
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
@@ -74,6 +74,25 @@ function configurePushover(t) {
 	});
 	return requests;
 }
+
+function requestMessage(request) {
+	return request.init.body.get("message");
+}
+
+test("completion notifications include a truncated assistant response preview", async (t) => {
+	const requests = configurePushover(t);
+	const longOutput = `Final answer: ${"x".repeat(1200)}`;
+	const harness = createHarness();
+
+	await harness.emit("agent_start");
+	await harness.emit("agent_end", { messages: [assistantMessage(longOutput)] });
+
+	assert.equal(requests.length, 1);
+	const message = requestMessage(requests[0]);
+	assert.match(message, /^Ready for your next prompt\n\nFinal answer: /);
+	assert.ok(message.length <= 1024);
+	assert.match(message, /\.\.\.$/);
+});
 
 test("historical notify-suppressed tool results do not suppress a later completion", async (t) => {
 	const requests = configurePushover(t);

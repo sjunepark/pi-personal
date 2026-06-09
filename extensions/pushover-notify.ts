@@ -10,6 +10,8 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_DEBOUNCE_MS = 3000;
 const CMUX_TIMEOUT_MS = 3000;
 const PUSHOVER_TITLE_MAX_LENGTH = 250;
+const ASSISTANT_PREVIEW_MAX_LENGTH = 900;
+const PUSHOVER_MESSAGE_MAX_LENGTH = 1024;
 const STATE_FILE_ENV = "PI_PUSHOVER_STATE_FILE";
 
 type PushoverConfig = {
@@ -23,9 +25,15 @@ type PushoverConfig = {
 	timeoutMs: number;
 };
 
+type TextContentLike = {
+	type?: string;
+	text?: string;
+};
+
 type AssistantLike = {
 	role?: string;
 	stopReason?: string;
+	content?: unknown;
 };
 
 type ToolResultLike = {
@@ -203,6 +211,27 @@ function trimSummary(text: string, maxLength = 160): string {
 	return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 3)}...` : collapsed;
 }
 
+function assistantOutputText(assistant: AssistantLike | undefined): string | undefined {
+	if (!assistant || !Array.isArray(assistant.content)) return undefined;
+	const text = assistant.content
+		.map((block: TextContentLike) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
+		.filter(Boolean)
+		.join("\n")
+		.trim();
+	return text || undefined;
+}
+
+function trimMessageBody(text: string, maxLength: number): string {
+	const trimmed = text.trim();
+	return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 3)}...` : trimmed;
+}
+
+function withAssistantPreview(message: string, assistant: AssistantLike | undefined): string {
+	const output = assistantOutputText(assistant);
+	if (!output) return message;
+	return trimMessageBody(`${message}\n\n${trimSummary(output, ASSISTANT_PREVIEW_MAX_LENGTH)}`, PUSHOVER_MESSAGE_MAX_LENGTH);
+}
+
 function getNotifyControl(details: unknown): NotifyControlDetails["notify"] | undefined {
 	if (!isRecord(details)) return undefined;
 	const notify = details.notify;
@@ -248,9 +277,10 @@ function completionMessage(messages: readonly unknown[], durationMs: number): Co
 	}
 
 	const duration = formatDuration(durationMs);
+	const message = durationMs >= 1000 ? `${DEFAULT_MESSAGE} (took ${duration})` : DEFAULT_MESSAGE;
 	return {
 		title: DEFAULT_TITLE,
-		message: durationMs >= 1000 ? `${DEFAULT_MESSAGE} (took ${duration})` : DEFAULT_MESSAGE,
+		message: withAssistantPreview(message, assistant),
 	};
 }
 
