@@ -57,6 +57,23 @@ test("AGENTS.md discovery walks broad-to-local and excludes startup-loaded conte
 	]);
 });
 
+test("discovery rejects AGENTS.md symlinks that resolve outside the project root", () => {
+	const root = makeTempRepo();
+	const outside = makeTempRepo();
+	const pkg = path.join(root, "packages", "web");
+	fs.mkdirSync(path.join(pkg, "src"), { recursive: true });
+	fs.writeFileSync(path.join(outside, "AGENTS.md"), "outside rules");
+	fs.symlinkSync(path.join(outside, "AGENTS.md"), path.join(pkg, "AGENTS.md"));
+
+	assert.deepEqual(discoverAgentsFiles(root, path.join(pkg, "src")), []);
+
+	const state = createNestedAgentsState();
+	state.projectRoot = root;
+	const result = activateNestedAgentsForPath(state, "packages/web/src/Button.svelte", root);
+	assert.deepEqual(result.activated, []);
+	assert.equal(state.activeInstructions.size, 0);
+});
+
 test("activation is cumulative and active instruction content refreshes by mtime", async () => {
 	const root = makeTempRepo();
 	const web = path.join(root, "packages", "web");

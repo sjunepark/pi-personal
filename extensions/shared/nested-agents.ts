@@ -118,6 +118,9 @@ export function discoverAgentsFiles(projectRoot: string, targetDirectory: string
 	const normalizedTargetDirectory = normalizeAbsolutePath(targetDirectory);
 	if (!isInsidePath(normalizedRoot, normalizedTargetDirectory)) return [];
 
+	const realRoot = safeRealpath(normalizedRoot);
+	if (!realRoot) return [];
+
 	const directories = ancestorDirectories(normalizedRoot, normalizedTargetDirectory);
 	const discovered: string[] = [];
 	const seenFileIds = new Set<string>();
@@ -130,6 +133,8 @@ export function discoverAgentsFiles(projectRoot: string, targetDirectory: string
 				if (!directoryContainsExactName(directory, fileName)) continue;
 				const stat = fs.statSync(candidate);
 				if (!stat.isFile()) continue;
+				const realCandidate = safeRealpath(candidate);
+				if (!realCandidate || !isInsidePath(realRoot, realCandidate)) continue;
 				const fileId = statFileId(stat);
 				if (loadedContextFiles.has(candidate) || loadedFileIds.has(fileId) || seenFileIds.has(fileId)) continue;
 				seenFileIds.add(fileId);
@@ -143,11 +148,19 @@ export function discoverAgentsFiles(projectRoot: string, targetDirectory: string
 	return discovered;
 }
 
-export function readInstructionFile(filePath: string, cache: Map<string, CachedInstruction>): CachedInstruction | undefined {
+export function readInstructionFile(filePath: string, cache: Map<string, CachedInstruction>, projectRoot: string): CachedInstruction | undefined {
 	const normalizedPath = normalizeAbsolutePath(filePath);
+	const realRoot = safeRealpath(projectRoot);
+	if (!realRoot) return undefined;
+
 	try {
 		const stat = fs.statSync(normalizedPath);
 		if (!stat.isFile()) return undefined;
+		const realPath = safeRealpath(normalizedPath);
+		if (!realPath || !isInsidePath(realRoot, realPath)) {
+			cache.delete(normalizedPath);
+			return undefined;
+		}
 
 		const cached = cache.get(normalizedPath);
 		if (cached && cached.mtimeMs === stat.mtimeMs) return cached;
@@ -179,7 +192,7 @@ export function activateNestedAgentsForPath(state: NestedAgentsState, rawPath: s
 	const activated: string[] = [];
 
 	for (const agentsFile of agentsFiles) {
-		const instruction = readInstructionFile(agentsFile, state.contentCache);
+		const instruction = readInstructionFile(agentsFile, state.contentCache, state.projectRoot);
 		if (!instruction) continue;
 
 		const existing = state.activeInstructions.get(instruction.path);
@@ -196,8 +209,10 @@ export function activateNestedAgentsForPath(state: NestedAgentsState, rawPath: s
 }
 
 export function refreshActiveInstructions(state: NestedAgentsState): void {
+	if (!state.projectRoot) return;
+
 	for (const [instructionPath, active] of Array.from(state.activeInstructions.entries())) {
-		const refreshed = readInstructionFile(instructionPath, state.contentCache);
+		const refreshed = readInstructionFile(instructionPath, state.contentCache, state.projectRoot);
 		if (!refreshed) {
 			state.activeInstructions.delete(instructionPath);
 			continue;
@@ -274,6 +289,14 @@ function directoryContainsExactName(directory: string, fileName: string): boolea
 		return fs.readdirSync(directory).includes(fileName);
 	} catch {
 		return false;
+	}
+}
+
+function safeRealpath(filePath: string): string | undefined {
+	try {
+		return normalizeAbsolutePath(fs.realpathSync(filePath));
+	} catch {
+		return undefined;
 	}
 }
 
