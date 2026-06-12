@@ -8,8 +8,10 @@ import {
 	latestAutoReviewStateFromEntries,
 	latestPostReviewLoopStateByIdFromEntries,
 	markReviewSliceCompleted,
+	normalizeAutoReviewDesignSignal,
 	parseAutoReviewStartArgs,
 	renderFindingDecisionPrompt,
+	renderGenericDecisionFollowupPrompt,
 	renderReviewPrompt,
 	reviewScopeForResult,
 	reviewSliceKey,
@@ -110,6 +112,28 @@ test("finding decision prompt is phone-friendly", () => {
 	assert.match(prompt, /short numbered answer is fine/);
 	assert.match(prompt, /1\. fix now/);
 	assert.match(prompt, /Should this be part/);
+});
+
+test("generic decision follow-up preserves pending self-review context", () => {
+	const state = {
+		...createAutoReviewState({ once: true }),
+		awaiting: {
+			kind: "finding_decision",
+			questions: ["Self-review Bucket I: Preserve context — include pending items", "Self-review Bucket II: Branch sync — decide lifecycle"],
+			findings: [],
+		},
+	};
+	const prompt = renderGenericDecisionFollowupPrompt(state, "1");
+
+	assert.match(prompt, /Pending decision context/);
+	assert.match(prompt, /Self-review Bucket I: Preserve context/);
+	assert.match(prompt, /Self-review Bucket II: Branch sync/);
+	assert.match(prompt, /User answer:\n1/);
+});
+
+test("auto-review design signals must match the canonical set", () => {
+	assert.equal(normalizeAutoReviewDesignSignal("weak type or schema model"), "weak type or schema model");
+	assert.throws(() => normalizeAutoReviewDesignSignal("schema-ish"), /Invalid designSignal/);
 });
 
 test("review scope summarizes the selected slice and changed files", () => {

@@ -1,4 +1,4 @@
-import type { BucketIItem, BucketIIItem, DesignSignal, LoopState, ValidationStatus } from "../post-review-loop/types.js";
+import { DESIGN_SIGNALS, type BucketIItem, type BucketIIItem, type DesignSignal, type LoopState, type ValidationStatus } from "../post-review-loop/types.ts";
 import { currentBucketIItems, currentBucketIIItems, isActionableBucketI, isUnresolvedBucketII } from "../post-review-loop/ledger.ts";
 
 export const AUTO_REVIEW_ENTRY_TYPE = "auto-review-loop-state";
@@ -320,6 +320,13 @@ export function reviewScopeForResult(state: AutoReviewState, result: AutoReviewR
 	return `auto-review iteration ${state.iteration}: ${sliceText(result.slice)}.${files}`;
 }
 
+export function normalizeAutoReviewDesignSignal(value: string): DesignSignal {
+	const cleaned = normalizeText(value);
+	const signal = DESIGN_SIGNALS.find((item) => item === cleaned);
+	if (!signal) throw new Error(`Invalid designSignal "${value}". Allowed: ${DESIGN_SIGNALS.map((item) => `"${item}"`).join(", ")}.`);
+	return signal;
+}
+
 export function renderReviewPrompt(state: AutoReviewState, slice: AutoReviewSlice): string {
 	return `Run auto-review iteration ${state.iteration}.
 
@@ -372,6 +379,18 @@ Pending findings:
 ${findingsText(findings)}
 
 Apply only work that the user clearly approved. If the answer is ambiguous, call auto_review_result with status "needs_user" and the remaining specific questions. If no code/docs change is requested, call auto_review_result with status "clean" and record the decision in findings. If you do make changes, validate them and call auto_review_result with status "fixed". Do not manually start /post-review-loop; the extension will start it when needed.`;
+}
+
+export function renderGenericDecisionFollowupPrompt(state: AutoReviewState, answer: string): string {
+	return `The user answered the auto-review follow-up request for iteration ${state.iteration}.
+
+User answer:
+${answer.trim()}
+
+Pending decision context:
+${bulletList(state.awaiting?.questions ?? [])}
+
+Apply only clearly approved follow-up work. If this is a branch-sync answer, do not merge or rebase unless the user explicitly approved it. If you change files, validate them and call auto_review_result with status "fixed". If no change is needed, call auto_review_result with status "clean". If the answer is ambiguous, call auto_review_result with status "needs_user".`;
 }
 
 export function renderPostReviewDecisionPrompt(state: AutoReviewState, bucketI: BucketIItem[], bucketII: BucketIIItem[]): string {

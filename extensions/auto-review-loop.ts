@@ -22,6 +22,7 @@ import {
 	parseAutoReviewStartArgs,
 	renderFindingDecisionPrompt,
 	renderFindingFollowupPrompt,
+	renderGenericDecisionFollowupPrompt,
 	renderLedgerState,
 	renderPostReviewDecisionPrompt,
 	renderReviewPrompt,
@@ -30,6 +31,7 @@ import {
 	selectNextReviewSlice,
 	unresolvedBucketIIItems,
 	updateAutoReviewState,
+	normalizeAutoReviewDesignSignal,
 	type AutoReviewFinding,
 	type AutoReviewResultStatus,
 	type AutoReviewResultSummary,
@@ -58,10 +60,12 @@ const ValidationSchema = Type.Object({
 	notes: Type.String({ minLength: 1 }),
 });
 
+const DesignSignalSchema = Type.Union(DESIGN_SIGNALS.map((signal) => Type.Literal(signal)));
+
 const FindingSchema = Type.Object({
 	title: Type.String({ minLength: 1 }),
 	tier: Type.Union([Type.Literal("auto_fix"), Type.Literal("ask_user"), Type.Literal("record_only")]),
-	designSignal: Type.String({ description: `Allowed: ${DESIGN_SIGNALS.map((signal) => `"${signal}"`).join(", ")}` }),
+	designSignal: DesignSignalSchema,
 	summary: Type.String({ minLength: 1 }),
 	files: Type.Array(Type.String()),
 	recommendedAction: Type.String({ minLength: 1 }),
@@ -107,6 +111,7 @@ function findings(values: AutoReviewFinding[] | undefined): AutoReviewFinding[] 
 			...item,
 			title: item.title.trim(),
 			summary: item.summary.trim(),
+			designSignal: normalizeAutoReviewDesignSignal(String(item.designSignal)),
 			files: unique(item.files),
 			recommendedAction: item.recommendedAction.trim(),
 			userQuestion: item.userQuestion?.trim() || undefined,
@@ -394,7 +399,7 @@ export default function autoReviewLoop(pi: ExtensionAPI): void {
 
 		const prompt = state.pendingFindings?.length
 			? renderFindingFollowupPrompt(state, cleanAnswer, state.pendingFindings)
-			: `The user answered the auto-review follow-up request for iteration ${state.iteration}.\n\nUser answer:\n${cleanAnswer}\n\nApply only clearly approved follow-up work. If this is a branch-sync answer, do not merge or rebase unless the user explicitly approved it. If you change files, validate them and call auto_review_result with status "fixed". If no change is needed, call auto_review_result with status "clean". If the answer is ambiguous, call auto_review_result with status "needs_user".`;
+			: renderGenericDecisionFollowupPrompt(state, cleanAnswer);
 		state = updateAutoReviewState(state, { lifecycle: "active_reviewing", awaiting: undefined, lastMessage: "User answered auto-review decision request." });
 		persist(ctx, "decision-answered", { answer: cleanAnswer });
 		triggerPrompt(ctx, prompt, { phase: "decision-followup" });
@@ -525,18 +530,24 @@ export default function autoReviewLoop(pi: ExtensionAPI): void {
 				return textToolResult(state.lastMessage ?? "No active review slice.", { state }, true, true);
 			}
 
-			const resultSummary: AutoReviewResultSummary = {
-				status: params.status,
-				slice: state.lastSlice,
-				summary: params.summary?.trim() || params.blocker?.trim() || "No summary provided.",
-				filesReviewed: unique(params.filesReviewed),
-				filesChanged: unique(params.filesChanged),
-				validation: validation(params.validation),
-				findings: findings(params.findings),
-				questions: [],
-				blocker: params.blocker?.trim() || undefined,
-			};
-			resultSummary.questions = questions(params.questions, resultSummary.findings, params.blocker);
+			let resultSummary: AutoReviewResultSummary;
+			try {
+				resultSummary = {
+					status: params.status,
+					slice: state.lastSlice,
+					summary: params.summary?.trim() || params.blocker?.trim() || "No summary provided.",
+					filesReviewed: unique(params.filesReviewed),
+					filesChanged: unique(params.filesChanged),
+					validation: validation(params.validation),
+					findings: findings(params.findings),
+					questions: [],
+					blocker: params.blocker?.trim() || undefined,
+				};
+				resultSummary.questions = questions(params.questions, resultSummary.findings, params.blocker);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return textToolResult(message, { state }, true);
+			}
 
 			if (params.status === "needs_user") {
 				const pending = resultSummary.findings.filter((item) => item.tier === "ask_user" || item.userQuestion);
