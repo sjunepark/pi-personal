@@ -8,6 +8,7 @@ import { agentCompaction } from "../agent-compaction.js";
 import { agentCompactionSummaryChecklist } from "../shared/agent-compaction-prompts.js";
 import { computeWorktreeFingerprint, createAfterReviewCommit, establishBaseline, failedAfterReviewCommit, needsAgentSelectedAfterReviewCommit } from "./git.js";
 import { currentBucketIItems, currentBucketIIItems } from "./ledger.js";
+import { POST_REVIEW_LOOP_START_EVENT, type PostReviewLoopStartRequest, type PostReviewLoopStartResult } from "./events.js";
 import { finalCommitPrompt, oneshotPrompt, phasePrompt, renderReusableEvidenceForStatus, resumePrompt } from "./prompts.js";
 import { renderCurrentReport, renderFinalReport } from "./report.js";
 import { latestStateFromSession, ReviewLoopRuntime } from "./state.js";
@@ -701,6 +702,40 @@ function requestInitialOneshotCompaction(pi: ExtensionAPI, ctx: ExtensionContext
 	notify(ctx, "Post-review-loop oneshot paused because another compaction is already pending. Rerun /post-review-loop oneshot when ready.", "warning");
 }
 
+function startLoopFromRequest(pi: ExtensionAPI, request: PostReviewLoopStartRequest): PostReviewLoopStartResult {
+	try {
+		const existing = runtime.state;
+		if (existing && existing.lifecycle !== "complete") {
+			return { ok: false, reason: `Post-review-loop is already ${existing.lifecycle} (${existing.phase} ${existing.iteration}/${existing.limit}).` };
+		}
+
+		const scope = request.scope.trim() || DEFAULT_REVIEW_SCOPE;
+		const state = startLoop(pi, request.ctx, scope, {
+			limit: request.limit,
+			reviewOnly: request.reviewOnly === true,
+			gitCheckpoint: request.gitCheckpoint !== false,
+		});
+		const source = request.source ? ` by ${request.source}` : "";
+		if (request.compact === true) {
+			notify(request.ctx, `Post-review-loop started${source}: ${compactText(state.scope)}; initial compaction required before the first phase.`, "info");
+			requestInitialLoopCompaction(pi, request.ctx, state);
+			return { ok: true, state };
+		}
+
+		notify(request.ctx, `Post-review-loop started${source}: ${compactText(state.scope)}; first phase prompt queued.`, "info");
+		if (agentActive) queuePhasePromptAfterAgent(state);
+		else if (!request.ctx.isIdle()) sendPhasePromptWhenIdle(pi, request.ctx, state);
+		else sendPhasePrompt(pi, request.ctx, state);
+		return { ok: true, state };
+	} catch (error) {
+		return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+function isPostReviewLoopStartRequest(value: unknown): value is PostReviewLoopStartRequest {
+	return Boolean(value && typeof value === "object" && "ctx" in value && typeof (value as { scope?: unknown }).scope === "string");
+}
+
 function registerCommand(pi: ExtensionAPI, name: string): void {
 	pi.registerCommand(name, {
 		description: "Run the deterministic post-review-loop workflow or a stateless oneshot review",
@@ -849,6 +884,12 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 	agentCompaction.register(pi);
 	registerMarkdownRenderer(pi);
 	registerCommand(pi, "post-review-loop");
+
+	let unsubscribeStartRequest: (() => void) | undefined = pi.events.on(POST_REVIEW_LOOP_START_EVENT, (data) => {
+		if (!isPostReviewLoopStartRequest(data)) return;
+		const result = startLoopFromRequest(pi, data);
+		data.onResult?.(result);
+	});
 
 	pi.registerTool({
 		name: "post_review_loop_get_state",
@@ -1048,6 +1089,8 @@ export default function postReviewLoop(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", () => {
+		unsubscribeStartRequest?.();
+		unsubscribeStartRequest = undefined;
 		agentActive = false;
 		pendingMarkdownMessages.splice(0);
 		pendingPhasePrompt = null;

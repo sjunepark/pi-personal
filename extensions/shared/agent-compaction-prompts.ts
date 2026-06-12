@@ -33,6 +33,7 @@ export function buildAgentCompactionRequestMessage(options: {
 	required: boolean;
 	why: readonly string[];
 	customInstructions?: string;
+	customInstructionsLabel?: string;
 	afterCompaction?: string;
 	failureInstruction?: string;
 	sections?: readonly string[];
@@ -41,7 +42,7 @@ export function buildAgentCompactionRequestMessage(options: {
 		? "Before continuing, call compact_conversation with a high-fidelity compacted working context, then stop this turn."
 		: "Decide automatically whether to compact before continuing. If you choose to compact, call compact_conversation with a high-fidelity compacted working context.";
 	const customInstructions = options.customInstructions
-		? `\n\nUser-provided compaction focus:\n${options.customInstructions}`
+		? `\n\n${options.customInstructionsLabel ?? "User-provided compaction focus"}:\n${options.customInstructions}`
 		: "";
 	const afterCompaction = options.afterCompaction ? `\n- After compaction: ${options.afterCompaction}` : "";
 	const failureInstruction = options.failureInstruction ? `\n\n${options.failureInstruction}` : "";

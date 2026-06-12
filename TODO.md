@@ -2,4 +2,4 @@
 
 ## Next
 
-- Check t3 code and see if it has mobile support.
+- Dogfood `/auto-dev once` in a low-risk project and tune the prompt/tool contract from real runs.
