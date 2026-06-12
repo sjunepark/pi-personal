@@ -6,6 +6,7 @@ import {
 	AUTO_DEV_ENTRY_TYPE,
 	AUTO_DEV_MESSAGE_TYPE,
 	AUTO_DEV_STATUS_KEY,
+	autoDevContextUsageNeedsCompaction,
 	autoDevEntry,
 	createAutoDevState,
 	latestAutoDevStateFromEntries,
@@ -28,9 +29,6 @@ import {
 	type AutoDevTaskSummary,
 	type AutoDevValidation,
 } from "./shared/auto-dev-loop.js";
-
-const COMPACT_MIN_TOKENS = 40_000;
-const COMPACT_MIN_PERCENT = 50;
 
 type ToolTextResult = { content: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean; terminate?: boolean };
 
@@ -174,8 +172,7 @@ export default function autoDevLoop(pi: ExtensionAPI): void {
 	function contextUsageRequiringBetweenTaskCompaction(ctx: ExtensionContext): ReturnType<ExtensionContext["getContextUsage"]> | undefined {
 		if (!state?.compactBetweenTasks) return undefined;
 		const usage = ctx.getContextUsage();
-		if (!usage || usage.tokens === null || usage.percent === null) return undefined;
-		return usage.tokens >= COMPACT_MIN_TOKENS || usage.percent >= COMPACT_MIN_PERCENT ? usage : undefined;
+		return autoDevContextUsageNeedsCompaction(usage) ? usage : undefined;
 	}
 
 	function continueAfterCompaction(ctx: ExtensionContext, expected: { stateId: string; iteration: number }): void {
@@ -190,20 +187,25 @@ export default function autoDevLoop(pi: ExtensionAPI): void {
 	function runPhysicalCompactionFallback(ctx: ExtensionContext, compactionState: AutoDevState, expected: { stateId: string; iteration: number }, reason: string): void {
 		notify(ctx, `Auto-dev-loop using built-in compaction fallback: ${reason}`, "warning");
 		const version = promptScheduleVersion;
+		const continueWithoutCompaction = (error: Error) => {
+			notify(ctx, `Auto-dev-loop compaction failed; continuing without compaction: ${error.message}`, "warning");
+			continueAfterCompaction(ctx, expected);
+		};
 		const poll = () => {
 			if (version !== promptScheduleVersion) return;
 			if (!ctx.isIdle()) {
 				setTimeout(poll, 25);
 				return;
 			}
-			ctx.compact({
-				customInstructions: renderHandoffSummary(compactionState),
-				onComplete: () => continueAfterCompaction(ctx, expected),
-				onError: (error) => {
-					notify(ctx, `Auto-dev-loop compaction failed; continuing without compaction: ${error.message}`, "warning");
-					continueAfterCompaction(ctx, expected);
-				},
-			});
+			try {
+				ctx.compact({
+					customInstructions: renderHandoffSummary(compactionState),
+					onComplete: () => continueAfterCompaction(ctx, expected),
+					onError: continueWithoutCompaction,
+				});
+			} catch (error) {
+				continueWithoutCompaction(error instanceof Error ? error : new Error(String(error)));
+			}
 		};
 		setTimeout(poll, 0);
 	}

@@ -8,6 +8,8 @@ export const POST_REVIEW_LOOP_ENTRY_TYPE = "post-review-loop-state";
 
 export const DEFAULT_TASK_FILES = ["TODO.md", "PLAN.md", "ROADMAP.md", "TASKS.md", "PLAN-*.md"];
 export const DEFAULT_REVIEW_LIMIT = 5;
+export const DEFAULT_COMPACT_MIN_TOKENS = 40_000;
+export const DEFAULT_COMPACT_MIN_PERCENT = 50;
 
 export type AutoDevLifecycle = "active" | "reviewing" | "awaiting_user" | "awaiting_bucket_ii" | "applying_bucket_ii" | "paused" | "complete";
 export type AutoDevTaskStatus = "completed" | "needs_user" | "blocked" | "no_task";
@@ -70,6 +72,16 @@ export type AutoDevContextUsage = {
 	tokens: number | null;
 	contextWindow: number;
 } | undefined;
+
+export function autoDevContextUsageNeedsCompaction(
+	usage: AutoDevContextUsage,
+	thresholds: { tokens?: number; percent?: number } = {},
+): boolean {
+	if (!usage) return false;
+	const tokenThreshold = thresholds.tokens ?? DEFAULT_COMPACT_MIN_TOKENS;
+	const percentThreshold = thresholds.percent ?? DEFAULT_COMPACT_MIN_PERCENT;
+	return (usage.tokens !== null && usage.tokens >= tokenThreshold) || (usage.percent !== null && usage.percent >= percentThreshold);
+}
 
 function now(): number {
 	return Date.now();

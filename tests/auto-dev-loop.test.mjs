@@ -4,6 +4,7 @@ import {
 	AUTO_DEV_ENTRY_TYPE,
 	DEFAULT_REVIEW_LIMIT,
 	POST_REVIEW_LOOP_ENTRY_TYPE,
+	autoDevContextUsageNeedsCompaction,
 	createAutoDevState,
 	latestAutoDevStateFromEntries,
 	latestPostReviewLoopStateByIdFromEntries,
@@ -77,6 +78,14 @@ test("review scope uses explicit scope or task fallback", () => {
 	);
 	assert.match(reviewScopeForTask(state, { title: "Fix docs", summary: "done", filesChanged: ["README.md"], validation: [] }), /Fix docs/);
 	assert.match(reviewScopeForTask(state, { title: "Fix docs", summary: "done", filesChanged: ["README.md"], validation: [] }), /README\.md/);
+});
+
+test("between-task compaction gating accepts either known usage threshold", () => {
+	assert.equal(autoDevContextUsageNeedsCompaction(undefined), false);
+	assert.equal(autoDevContextUsageNeedsCompaction({ percent: null, tokens: null, contextWindow: 100000 }), false);
+	assert.equal(autoDevContextUsageNeedsCompaction({ percent: null, tokens: 41000, contextWindow: 100000 }), true);
+	assert.equal(autoDevContextUsageNeedsCompaction({ percent: 51, tokens: null, contextWindow: 100000 }), true);
+	assert.equal(autoDevContextUsageNeedsCompaction({ percent: 49, tokens: 39000, contextWindow: 100000 }), false);
 });
 
 test("between-task compaction prompt requires agent-authored context and preserves auto-dev state", () => {
