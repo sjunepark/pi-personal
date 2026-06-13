@@ -11,7 +11,7 @@ import { getFastSupportForModel, isFastModeRequested, parseFastModeModel } from 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 const TOOL_MODES = ["read-only", "write", "none"] as const;
 const CONTEXT_MODES = ["fresh", "fork"] as const;
-const MAX_PARALLEL_TASKS = 8;
+const MAX_PARALLEL_TASKS = 12;
 const DEFAULT_CONCURRENCY = 4;
 const MAX_MODEL_VISIBLE_OUTPUT_BYTES = 50 * 1024;
 const SIMPLE_EXTRACTION_MODEL = "openai-codex/gpt-5.4-mini";
