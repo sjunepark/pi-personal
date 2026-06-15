@@ -254,6 +254,10 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 	const cache = new Map<SupportedProvider, CacheEntry>();
 	let refreshVersion = 0;
 
+	function invalidatePendingRefreshes(): void {
+		refreshVersion++;
+	}
+
 	async function getLine(provider: SupportedProvider, force = false): Promise<string | undefined> {
 		const cached = cache.get(provider);
 		if (!force && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
@@ -284,6 +288,7 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 			return;
 		}
 
+		const thinking = formatThinkingLevel(pi, ctx);
 		const line = await getLine(provider, force);
 		if (version !== refreshVersion) return;
 
@@ -292,7 +297,7 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 			return;
 		}
 
-		ctx.ui.setStatus(STATUS_KEY, formatStatusLine(provider, line, formatThinkingLevel(pi, ctx)));
+		ctx.ui.setStatus(STATUS_KEY, formatStatusLine(provider, line, thinking));
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -312,6 +317,7 @@ export default function subUsageLite(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		invalidatePendingRefreshes();
 		if (ctx.hasUI) {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 		}
