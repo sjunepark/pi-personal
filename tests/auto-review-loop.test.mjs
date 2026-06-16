@@ -13,6 +13,7 @@ import {
 	renderFindingDecisionPrompt,
 	renderGenericDecisionFollowupPrompt,
 	renderReviewPrompt,
+	reviewResultCompletesSliceWithoutSelfReview,
 	reviewScopeForResult,
 	reviewSliceKey,
 	selectNextReviewSlice,
@@ -79,6 +80,13 @@ test("review slice selection advances through uncompleted area dimension cells",
 	const secondState = markReviewSliceCompleted(state, first);
 	assert.equal(reviewSliceKey(first), "a:correctness");
 	assert.deepEqual(selectNextReviewSlice(secondState), { areaId: "b", areaLabel: "Area B", files: ["b.ts"], dimension: "correctness" });
+});
+
+test("no-target results complete the slice without ending the loop", () => {
+	assert.equal(reviewResultCompletesSliceWithoutSelfReview("clean", []), true);
+	assert.equal(reviewResultCompletesSliceWithoutSelfReview("no_target", []), true);
+	assert.equal(reviewResultCompletesSliceWithoutSelfReview("fixed", []), false);
+	assert.equal(reviewResultCompletesSliceWithoutSelfReview("no_target", ["README.md"]), false);
 });
 
 test("review prompt encodes conservative auto-fix and result-tool rules", () => {

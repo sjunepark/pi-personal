@@ -278,6 +278,10 @@ export function markReviewSliceCompleted(state: AutoReviewState, slice: AutoRevi
 	return updateAutoReviewState(state, { completedSlices: Array.from(completed), lastSlice: slice });
 }
 
+export function reviewResultCompletesSliceWithoutSelfReview(status: AutoReviewResultStatus, filesChanged: string[]): boolean {
+	return filesChanged.length === 0 && (status === "clean" || status === "no_target");
+}
+
 export function unresolvedBucketIIItems(state: Pick<LoopState, "bucketII"> | null): BucketIIItem[] {
 	return state ? currentBucketIIItems(state.bucketII).filter(isUnresolvedBucketII) : [];
 }

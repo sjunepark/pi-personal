@@ -30,7 +30,7 @@ When the loop is waiting for a decision, answer normally or explicitly:
 ## Workflow contract
 
 1. The extension selects one review slice from configured area × dimension cells.
-2. The model reviews real files for that slice and reports with `auto_review_result`.
+2. The model reviews real files for that slice and reports with `auto_review_result`; slices with no matching files are recorded complete and the loop continues.
 3. The model may auto-fix only tiny obvious local issues with no design, schema, public contract, lifecycle, ownership, or taste decision.
 4. Larger design/refactor findings pause the loop and ask for a user decision.
 5. If files changed, the extension starts `post-review-loop` programmatically.

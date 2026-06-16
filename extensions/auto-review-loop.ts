@@ -27,6 +27,7 @@ import {
 	renderPostReviewDecisionPrompt,
 	renderReviewPrompt,
 	renderStatus,
+	reviewResultCompletesSliceWithoutSelfReview,
 	reviewScopeForResult,
 	selectNextReviewSlice,
 	unresolvedBucketIIItems,
@@ -569,10 +570,11 @@ export default function autoReviewLoop(pi: ExtensionAPI): void {
 				return textToolResult(`Auto-review-loop paused: ${state.lastMessage}`, { state }, false, true);
 			}
 
-			if (params.status === "no_target") {
-				state = updateAutoReviewState(state, { lifecycle: "complete", lastReview: resultSummary, awaiting: undefined, lastMessage: resultSummary.summary });
-				persist(ctx, "no-target", { result: resultSummary });
-				return textToolResult("Auto-review-loop completed: no review target was available.", { state }, false, true);
+			if (reviewResultCompletesSliceWithoutSelfReview(params.status, resultSummary.filesChanged)) {
+				state = markReviewSliceCompleted(updateAutoReviewState(state, { lastReview: resultSummary, awaiting: undefined, lastMessage: resultSummary.summary }), resultSummary.slice);
+				persist(ctx, params.status === "no_target" ? "review-no-target" : "review-clean", { result: resultSummary });
+				finishOrContinue(ctx, params.status === "no_target" ? "Review slice had no matching files; continuing to the next configured slice." : "Review slice finished with no auto-fix or user decision needed.");
+				return textToolResult(params.status === "no_target" ? "Auto-review slice had no target and was skipped." : "Auto-review slice recorded as clean.", suppressNotifyDetails({ state }), false, true);
 			}
 
 			if (params.status === "fixed" || resultSummary.filesChanged.length > 0) {
@@ -589,10 +591,9 @@ export default function autoReviewLoop(pi: ExtensionAPI): void {
 				return textToolResult("Auto-review result accepted. Post-review-loop has been started; stop substantial work until its prompts continue.", suppressNotifyDetails({ state }), false, true);
 			}
 
-			state = markReviewSliceCompleted(updateAutoReviewState(state, { lastReview: resultSummary, awaiting: undefined, lastMessage: resultSummary.summary }), resultSummary.slice);
-			persist(ctx, "review-clean", { result: resultSummary });
-			finishOrContinue(ctx, "Review slice finished with no auto-fix or user decision needed.");
-			return textToolResult("Auto-review slice recorded as clean.", suppressNotifyDetails({ state }), false, true);
+			state = updateAutoReviewState(state, { lifecycle: "paused", lastReview: resultSummary, awaiting: undefined, lastMessage: `Unhandled auto-review result status: ${params.status}` });
+			persist(ctx, "review-result-unhandled", { result: resultSummary });
+			return textToolResult(state.lastMessage, { state }, true, true);
 		},
 	});
 
